@@ -1,0 +1,74 @@
+{
+  "name": "cutcut",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local multitrack video editor",
+  "author": "CUTCUT",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "npm run typecheck && npm run tools:check && tsx scripts/record-tools.ts && vite build && node scripts/build-main.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "test:ui": "playwright test",
+    "start": "electron .",
+    "package:mac": "npm run build && node scripts/package.mjs",
+    "tools:check": "tsx scripts/check-tools.ts",
+    "format": "prettier --write src tests scripts *.ts *.json index.html"
+  },
+  "dependencies": {
+    "@ffprobe-installer/ffprobe": "2.1.2",
+    "@napi-rs/canvas": "^1.1.0",
+    "ffmpeg-static": "5.3.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "electron": "^39.2.0",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.27.0",
+    "prettier": "^3.9.10",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.0"
+  },
+  "build": {
+    "appId": "studio.cutcut.editor",
+    "productName": "CUTCUT",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "resources"
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**/*",
+      "node_modules/@ffprobe-installer/**/*",
+      "node_modules/@napi-rs/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "hardenedRuntime": true
+    }
+  }
+}
