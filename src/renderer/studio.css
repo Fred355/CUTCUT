@@ -1,0 +1,435 @@
+:root {
+  --bg: #101421;
+  --surface: #181e30;
+  --raised: #222c43;
+  --text: #eef2ff;
+  --muted: #929db7;
+  --border: #303d59;
+  --accent: #4676ff;
+  --on-accent: #fff;
+  --tint: #1b3264;
+}
+:root[data-theme='lime'] {
+  --bg: #101414;
+  --surface: #191e20;
+  --raised: #28312c;
+  --text: #e9eee6;
+  --muted: #a0ad9b;
+  --border: #394637;
+  --accent: #c4f36c;
+  --on-accent: #17200b;
+  --tint: #314129;
+}
+:root[data-theme='purple'] {
+  --bg: #171323;
+  --surface: #211c33;
+  --raised: #322943;
+  --text: #f2edff;
+  --muted: #afa0c6;
+  --border: #493b60;
+  --accent: #a078ed;
+  --on-accent: #fff;
+  --tint: #3b285b;
+}
+:root[data-theme='light'] {
+  --bg: #f2f4fa;
+  --surface: #fff;
+  --raised: #e8edf7;
+  --text: #202b45;
+  --muted: #65718b;
+  --border: #d9dfec;
+  --accent: #3562d9;
+  --on-accent: #fff;
+  --tint: #e1eaff;
+}
+html body {
+  background: var(--bg);
+  color: var(--text);
+}
+.app > header {
+  background: var(--surface);
+  border-color: var(--border);
+}
+.app button {
+  background: var(--raised);
+  color: var(--text);
+  border-color: var(--border);
+}
+.app button:hover {
+  filter: brightness(1.15);
+}
+.app button.primary,
+.app .brandmark {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.app input,
+.app select,
+.app textarea {
+  background: var(--bg);
+  color: var(--text);
+  border-color: var(--border);
+}
+.app .library,
+.app .inspector,
+.app .timeline,
+.app .timeline-toolbar,
+.app .track-labels,
+.app .modal {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+.app .asset-card,
+.app .track-label {
+  background: var(--raised);
+  border-color: var(--border);
+}
+.app .project-title,
+.app .library-sub,
+.app kbd {
+  color: var(--muted);
+}
+.studio-shell {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg);
+}
+.studio-sidebar {
+  width: 216px;
+  flex-shrink: 0;
+  padding: 26px 14px 18px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.studio-sidebar .eyebrow {
+  padding: 0 16px;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 2px;
+}
+.studio-sidebar > button {
+  display: flex;
+  align-items: center;
+  text-align: left;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid transparent;
+  background: transparent;
+  font-size: 14px;
+}
+.studio-sidebar > button span {
+  font-size: 21px;
+  width: 22px;
+  text-align: center;
+}
+.studio-sidebar > button.active {
+  background: var(--tint);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.studio-sidebar small {
+  font-size: 9px;
+  margin-left: auto;
+}
+.sidebar-separator {
+  border-top: 1px solid var(--border);
+  margin: 12px;
+}
+.sidebar-bottom {
+  margin-top: auto;
+  padding: 18px 10px 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.8;
+}
+.sidebar-bottom button {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+}
+.studio-main {
+  padding: 36px 40px 60px;
+  overflow: auto;
+  flex: 1;
+  min-width: 0;
+  background: radial-gradient(ellipse at 90% 0%, var(--tint), transparent 55%);
+}
+.studio-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 28px;
+}
+.studio-heading h1 {
+  font-size: 32px;
+  margin: 8px 0 10px;
+  letter-spacing: -1px;
+}
+.studio-heading p {
+  color: var(--muted);
+  margin: 0;
+  line-height: 1.8;
+}
+.studio-heading .eyebrow {
+  font-size: 9px;
+  letter-spacing: 3px;
+  color: var(--accent);
+}
+.hero-orbit {
+  width: 165px;
+  height: 95px;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  transform: rotate(-20deg);
+  display: flex;
+  align-items: center;
+  justify-content: space-evenly;
+  font-size: 44px;
+  color: var(--accent);
+  box-shadow:
+    0 0 50px color-mix(in srgb, var(--accent) 15%, transparent),
+    inset 0 0 20px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.hero-orbit span {
+  font-size: 30px;
+  transform: rotate(20deg);
+}
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+  margin-bottom: 20px;
+}
+.stat-card {
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 12px;
+  background: linear-gradient(125deg, var(--raised), var(--tint));
+  padding: 22px;
+  display: flex;
+  gap: 22px;
+  align-items: center;
+}
+.stat-icon {
+  font-size: 32px;
+  color: var(--accent);
+}
+.stat-card p {
+  margin: 0 0 5px;
+  color: var(--muted);
+}
+.stat-card strong {
+  font-size: 32px;
+  display: block;
+}
+.stat-card small {
+  display: block;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 34px;
+}
+.feature-card {
+  position: relative;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 22px 18px;
+}
+.feature-card h2 {
+  font-size: 16px;
+}
+.feature-card p {
+  color: var(--muted);
+  font-size: 11px;
+  min-height: 30px;
+}
+.feature-card > span {
+  position: absolute;
+  right: 16px;
+  bottom: 20px;
+  font-size: 30px;
+  color: var(--accent);
+  opacity: 0.6;
+}
+.feature-card button {
+  font-size: 11px;
+}
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.section-title h2 {
+  font-size: 20px;
+}
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 20px;
+}
+.project-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.project-card .project-cover {
+  width: 100%;
+  height: 220px;
+  position: relative;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(150deg, var(--tint), var(--bg));
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+.project-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.project-cover > span {
+  font-size: 48px;
+  color: var(--accent);
+}
+.project-cover small {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  padding: 4px 8px;
+  background: var(--tint);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.project-card > div {
+  padding: 14px;
+}
+.project-card h3 {
+  margin: 0 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-card p {
+  font-size: 10px;
+  color: var(--muted);
+}
+.project-card button + button {
+  margin-left: 6px;
+}
+.studio-empty {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 50px 20px;
+  text-align: center;
+  color: var(--muted);
+  background: var(--surface);
+}
+.studio-empty > span {
+  font-size: 40px;
+  color: var(--accent);
+  display: block;
+  margin-bottom: 16px;
+}
+.studio-empty h2 {
+  font-size: 18px;
+  color: var(--text);
+}
+.studio-empty p {
+  margin-bottom: 25px;
+}
+.settings-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  background: var(--surface);
+  margin-bottom: 20px;
+}
+.settings-card h2 {
+  font-size: 18px;
+}
+.settings-card p {
+  color: var(--muted);
+  line-height: 1.9;
+}
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-top: 20px;
+}
+.theme-choice span {
+  height: 60px;
+  display: block;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+.theme-choice.chosen {
+  outline: 2px solid var(--accent);
+}
+.model-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin: 18px 0;
+}
+.model-row label {
+  width: 90px;
+}
+.model-row input {
+  flex: 1;
+  min-width: 100px;
+  padding: 10px;
+}
+.model-row select {
+  padding: 9px;
+}
+.material-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 16px;
+}
+.material-item {
+  text-align: left;
+  padding: 20px !important;
+  white-space: normal !important;
+}
+.material-item span {
+  font-size: 32px;
+  color: var(--accent);
+  display: block;
+}
+.material-item strong {
+  display: block;
+  margin: 12px 0;
+  overflow-wrap: anywhere;
+}
+.material-item small {
+  color: var(--muted);
+}
+@media (max-width: 1200px) {
+  .studio-main {
+    padding: 28px 24px;
+  }
+  .studio-sidebar {
+    width: 190px;
+  }
+  .feature-card {
+    padding: 18px 12px;
+  }
+  .feature-card h2 {
+    font-size: 14px;
+  }
+}

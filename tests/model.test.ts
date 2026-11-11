@@ -72,7 +72,7 @@ test('不信任外部工程：拒绝路径遍历、重复 ID、非法数值与�
   const p = fixture();
   p.tracks[0].id = p.id;
   assert.equal(projectSchema.safeParse(p).success, false);
-  assert.equal(projectSchema.safeParse({ ...fixture(), version: 2 }).success, false);
+  assert.equal(projectSchema.safeParse({ ...fixture(), version: 99 }).success, false);
   const q = fixture();
   assert.throws(() => changeClip(q, q.tracks[1].clips[0].id, { x: Infinity }));
 });

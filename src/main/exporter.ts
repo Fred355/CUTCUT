@@ -1,3 +1,4 @@
+import { expression, atempo } from '../shared/effects';
 import { createCanvas, GlobalFonts } from '@napi-rs/canvas';
 import { textLines } from '../shared/text';
 import fs from 'node:fs/promises';
@@ -37,6 +38,7 @@ export async function exportVideo(
           start = c.start / p.fps,
           duration = c.duration / p.fps,
           finish = (c.start + c.duration) / p.fps;
+        const fades = `${c.fadeIn ? `,fade=t=in:st=0:d=${c.fadeIn / p.fps}:alpha=1` : ''}${c.fadeOut ? `,fade=t=out:st=${(c.duration - c.fadeOut) / p.fps}:d=${c.fadeOut / p.fps}:alpha=1` : ''}`;
         if (track.kind === 'text') {
           const canvas = createCanvas(p.width, p.height),
             ctx = canvas.getContext('2d');
@@ -52,7 +54,7 @@ export async function exportVideo(
           const i = input++,
             fg = `f${tag}`,
             next = `v${tag}`;
-          filters.push(`[${i}:v]format=rgba,setpts=PTS-STARTPTS+${start}/TB[${fg}]`);
+          filters.push(`[${i}:v]format=rgba${fades},setpts=PTS-STARTPTS+${start}/TB[${fg}]`);
           filters.push(
             `[${visual}][${fg}]overlay=0:0:format=rgb:eof_action=pass:repeatlast=0:enable='gte(t,${start})*lt(t,${finish})'[${next}]`,
           );
@@ -63,7 +65,7 @@ export async function exportVideo(
         const source = await safeFile(root, a.path);
         if (a.kind === 'image') args.push('-loop', '1', '-framerate', String(p.fps));
         else args.push('-ss', String(c.in / p.fps));
-        args.push('-threads', '2', '-t', String(duration), '-i', source);
+        args.push('-threads', '2', '-t', String(duration * (c.speed || 1)), '-i', source);
         const i = input++;
         if (a.kind !== 'audio') {
           const r = clipRect(p, a, c);
@@ -73,17 +75,17 @@ export async function exportVideo(
           const fg = `f${tag}`,
             next = `v${tag}`;
           filters.push(
-            `[${i}:v]${a.hdr ? toneMap + ',' : ''}fps=${p.fps},scale=${w}:${h},setsar=1,format=rgba,colorchannelmixer=aa=${c.opacity},setpts=PTS-STARTPTS+${start}/TB[${fg}]`,
+            `[${i}:v]${a.hdr ? toneMap + ',' : ''}setpts=(PTS-STARTPTS)/${c.speed || 1},fps=${p.fps},scale=w='max(2,trunc(${a.width * Math.min(p.width / a.width, p.height / a.height)}*(${expression(c, 'scale', 'n')})/2)*2)':h='max(2,trunc(${a.height * Math.min(p.width / a.width, p.height / a.height)}*(${expression(c, 'scale', 'n')})/2)*2)':eval=frame,setsar=1,format=rgba,${c.keyframes?.some((k) => k.property === 'opacity') ? `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*(${expression(c, 'opacity', `T*${p.fps}`)})'` : `colorchannelmixer=aa=${c.opacity}`}${fades},setpts=PTS-STARTPTS+${start}/TB[${fg}]`,
           );
           filters.push(
-            `[${visual}][${fg}]overlay=x=${c.x}:y=${c.y}:format=rgb:eof_action=pass:repeatlast=0:enable='gte(t,${start})*lt(t,${finish})'[${next}]`,
+            `[${visual}][${fg}]overlay=x='${expression(c, 'x', `(t-${start})*${p.fps}`)}':y='${expression(c, 'y', `(t-${start})*${p.fps}`)}':format=rgb:eof_action=pass:repeatlast=0:enable='gte(t,${start})*lt(t,${finish})'[${next}]`,
           );
           visual = next;
         }
         if (a.hasAudio && !c.muted && !track.muted && c.volume > 0) {
           const label = `a${tag}`;
           filters.push(
-            `[${i}:a]atrim=duration=${duration},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,volume=${c.volume},adelay=${Math.round(start * 1000)}|${Math.round(start * 1000)}[${label}]`,
+            `[${i}:a]atrim=duration=${duration * (c.speed || 1)},asetpts=PTS-STARTPTS,${atempo(c.speed || 1)},atrim=duration=${duration}${c.fadeIn ? `,afade=t=in:st=0:d=${c.fadeIn / p.fps}` : ''}${c.audioFadeOut || c.fadeOut ? `,afade=t=out:st=${(c.duration - (c.audioFadeOut || c.fadeOut!)) / p.fps}:d=${(c.audioFadeOut || c.fadeOut!) / p.fps}` : ''},aresample=48000,aformat=channel_layouts=stereo,volume=${c.volume},adelay=${Math.round(start * 1000)}|${Math.round(start * 1000)}[${label}]`,
           );
           audios.push(`[${label}]`);
         }

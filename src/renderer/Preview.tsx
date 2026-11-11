@@ -1,3 +1,4 @@
+import { evaluatedClip } from '../shared/effects';
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { textLines } from '../shared/text';
 import { activeAt, clipRect, endFrame, type Clip, type Project } from '../shared/model';
@@ -86,10 +87,11 @@ export const Preview = forwardRef<PreviewHandle, Props>(function Preview(props, 
         for (const t of [...p.tracks].reverse())
           for (const original of t.clips) {
             if (!activeAt(original, f)) continue;
+            const animated = evaluatedClip(original, f);
             const c =
               draftRef.current?.id === original.id
-                ? { ...original, ...draftRef.current.patch }
-                : original;
+                ? { ...animated, ...draftRef.current.patch }
+                : animated;
             ctx.globalAlpha = c.opacity;
             if (t.kind === 'text') {
               ctx.font = `${c.fontSize}px CutcutSans`;
@@ -131,7 +133,10 @@ export const Preview = forwardRef<PreviewHandle, Props>(function Preview(props, 
   const visuals = project.tracks
     .filter((t) => t.kind !== 'audio')
     .flatMap((t) => t.clips.filter((c) => activeAt(c, frame)))
-    .map((c) => (draft?.id === c.id ? { ...c, ...draft.patch } : c));
+    .map((original) => {
+      const c = evaluatedClip(original, frame);
+      return draft?.id === c.id ? { ...c, ...draft.patch } : c;
+    });
   const chosen = visuals.find((c) => c.id === selected),
     box = chosen ? visualRect(project, chosen, measure) : null;
   const point = (e: { clientX: number; clientY: number }) => {

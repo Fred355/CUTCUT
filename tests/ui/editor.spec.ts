@@ -93,7 +93,7 @@ test('桌面导入、多轨编辑、保存重开与真实 MP4 导出', async ({}
     page.on('console', (m) => {
       if (m.text().includes('MediaElementAudioSource outputs zeroes')) errors.push(m.text());
     });
-    await expect(page.getByRole('heading', { name: '让素材，成为你的作品。' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '你好，创作者' })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath('welcome.png') });
     await page.getByRole('button', { name: '＋ 创建剪辑工程' }).click();
     await page.getByLabel('工程名称').fill('桌面验证');
@@ -199,6 +199,21 @@ test('桌面导入、多轨编辑、保存重开与真实 MP4 导出', async ({}
     await page.getByRole('button', { name: '打开工程' }).click();
     await expect(page.getByRole('status')).toContainText('工程已打开');
     await expect(page.locator('.timeline-clip')).toHaveCount(5);
+    await page.getByRole('button', { name: '版本历史', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: '版本历史' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '恢复此版本' }).first()).toBeVisible();
+    await page.getByRole('button', { name: '关闭', exact: true }).click();
+    await page.locator('.timeline-clip.video').first().click();
+    const originalDuration = Number(await page.getByLabel('持续帧数').inputValue());
+    await page.getByLabel('播放速度', { exact: true }).selectOption('2');
+    await expect(page.getByLabel('持续帧数')).toHaveValue(String(Math.floor(originalDuration / 2)));
+    await page.getByTitle('撤销').click();
+    await expect(page.getByLabel('持续帧数')).toHaveValue(String(originalDuration));
+    await page.getByLabel('淡入帧数').fill('3');
+    await page.getByLabel('淡入帧数').press('Enter');
+    await expect(page.getByLabel('淡入帧数')).toHaveValue('3');
+    await page.getByTitle('撤销').click();
+    await expect(page.getByLabel('淡入帧数')).toHaveValue('0');
     await page.getByRole('button', { name: '↗ 导出成片' }).click();
     await expect(page.getByRole('status')).toContainText('导出完成', { timeout: 60000 });
     expect((await fs.stat(path.join(tmp, '成片.mp4'))).size).toBeGreaterThan(1000);

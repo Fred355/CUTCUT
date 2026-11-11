@@ -33,6 +33,21 @@ export const assetSchema = z.object({
 export const clipSchema = z.object({
   id,
   assetId: id.optional(),
+  speed: z.number().min(0.25).max(4).optional(),
+  fadeIn: frame.optional(),
+  fadeOut: frame.optional(),
+  audioFadeOut: frame.optional(),
+  keyframes: z
+    .array(
+      z.object({
+        property: z.enum(['x', 'y', 'scale', 'opacity']),
+        frame,
+        value: z.number().finite(),
+        interpolation: z.enum(['linear', 'hold']),
+      }),
+    )
+    .max(500)
+    .optional(),
   start: frame,
   duration: frame.refine((n) => n > 0),
   in: frame,
@@ -58,7 +73,7 @@ export const trackSchema = z.object({
 });
 export const projectSchema = z
   .object({
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     id,
     name: z.string().min(1).max(150),
     width: z.union([z.literal(1920), z.literal(1080)]),
@@ -82,6 +97,33 @@ export const projectSchema = z
         const c = sorted[i];
         if (i && sorted[i - 1].start + sorted[i - 1].duration > c.start)
           bad('同一轨道的片段不可重叠');
+        if (
+          p.version === 1 &&
+          (c.speed !== undefined ||
+            c.fadeIn !== undefined ||
+            c.fadeOut !== undefined ||
+            c.audioFadeOut !== undefined ||
+            c.keyframes !== undefined)
+        )
+          bad('新效果需要工程版本 2');
+        if ((c.audioFadeOut || 0) > c.duration) bad('音频淡出超过片段时长');
+        if ((c.fadeIn || 0) + (c.fadeOut || 0) > c.duration) bad('淡入淡出总长度不可超过片段时长');
+        if ((t.kind === 'text' || t.kind === 'image') && (c.speed || 1) !== 1)
+          bad('文字和图片不可变速');
+        if ((t.kind === 'text' || t.kind === 'audio') && c.keyframes?.length)
+          bad('当前关键帧支持视频和图片');
+        const keys = new Set<string>();
+        for (const k of c.keyframes || []) {
+          const id = k.property + ':' + k.frame;
+          if (keys.has(id) || k.frame >= c.duration) bad('关键帧重复或超出片段范围');
+          keys.add(id);
+          if (k.property === 'scale' && (k.value < 0.01 || k.value > 4))
+            bad('关键帧缩放必须在 0.01–4 之间');
+          if (k.property === 'opacity' && (k.value < 0 || k.value > 1))
+            bad('关键帧透明度必须在 0–1 之间');
+          if ((k.property === 'x' || k.property === 'y') && Math.abs(k.value) > 8192)
+            bad('关键帧位置超出范围');
+        }
         if (t.kind === 'text') {
           if (c.assetId || c.text === undefined) bad('文字片段数据无效');
           continue;
@@ -92,7 +134,8 @@ export const projectSchema = z
           continue;
         }
         if (a.kind !== t.kind) bad('素材与轨道类型不匹配');
-        if (a.kind !== 'image' && c.in + c.duration > a.durationFrames) bad('片段超出素材范围');
+        if (a.kind !== 'image' && c.in + Math.ceil(c.duration * (c.speed || 1)) > a.durationFrames)
+          bad('片段超出素材范围');
       }
     }
   });
@@ -121,7 +164,7 @@ export const endFrame = (p: Project) =>
   Math.max(0, ...p.tracks.flatMap((t) => t.clips.map((c) => c.start + c.duration)));
 export const activeAt = (c: Clip, frame: number) =>
   frame >= c.start && frame < c.start + c.duration;
-export const sourceFrame = (c: Clip, frame: number) => c.in + frame - c.start;
+export const sourceFrame = (c: Clip, frame: number) => c.in + (frame - c.start) * (c.speed || 1);
 export function clipRect(p: Project, a: Asset, c: Clip) {
   const fit = Math.min(p.width / a.width, p.height / a.height) * c.scale;
   return { x: c.x, y: c.y, width: a.width * fit, height: a.height * fit };
@@ -165,6 +208,8 @@ export function splitClip(p: Project, id: string, at: number): Project {
       clips: t.clips.flatMap((c) => {
         if (c.id !== id) return [c];
         if (at <= c.start || at >= c.start + c.duration) throw new Error('请将播放头放在片段内部');
+        if (c.keyframes?.length || c.fadeIn || c.fadeOut || c.audioFadeOut)
+          throw new Error('请先清除关键帧和淡入淡出，再拆分片段');
         const offset = at - c.start;
         const asset = p.assets.find((a) => a.id === c.assetId);
         return [
@@ -174,7 +219,10 @@ export function splitClip(p: Project, id: string, at: number): Project {
             id: uid(),
             start: at,
             duration: c.duration - offset,
-            in: t.kind === 'text' || asset?.kind === 'image' ? c.in : c.in + offset,
+            in:
+              t.kind === 'text' || asset?.kind === 'image'
+                ? c.in
+                : c.in + Math.round(offset * (c.speed || 1)),
           },
         ];
       }),

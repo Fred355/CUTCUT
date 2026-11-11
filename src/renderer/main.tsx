@@ -1,3 +1,5 @@
+import { changeSpeed, dissolve } from '../shared/effects';
+import { Dashboard } from './Dashboard';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
@@ -19,6 +21,7 @@ import {
 import type { Bridge, ExportEvent, Opened } from '../shared/bridge';
 import { Preview, type PreviewHandle } from './Preview';
 import './style.css';
+import './studio.css';
 const api = window.cutcut;
 const timecode = (f: number) =>
   `${Math.floor(f / 1800)
@@ -28,6 +31,16 @@ const timecode = (f: number) =>
       '0',
     )}:${Math.floor(f / 30) % 60 < 10 ? '0' : ''}${Math.floor(f / 30) % 60}:${(f % 30).toString().padStart(2, '0')}`;
 function App() {
+  const [versions, setVersions] = useState<Awaited<ReturnType<Bridge['versions']>> | null>(null);
+  const [home, setHome] = useState(true);
+  useEffect(() => {
+    void api
+      ?.settings()
+      .then((s) => {
+        document.documentElement.dataset.theme = s.settings.theme;
+      })
+      .catch(() => {});
+  }, []);
   const [project, setProject] = useState<Project | null>(null),
     [selected, setSelected] = useState(''),
     [frame, setFrame] = useState(0),
@@ -83,6 +96,7 @@ function App() {
     if (!opened) return;
     revision.current++;
     setProject(opened.project);
+    setHome(false);
     setMissing(opened.missing);
     setDirty(opened.recovered);
     setFrame(0);
@@ -237,6 +251,8 @@ function App() {
       tracks: p.tracks.map((t) => ({ ...t, clips: t.clips.filter((c) => c.id !== selected) })),
     }));
   const patch = (value: Partial<Clip>) => apply((p) => changeClip(p, selected, value));
+  const effectPatch = (value: Partial<Clip>) =>
+    apply((p) => changeClip({ ...p, version: 2 }, selected, value));
   useEffect(() => {
     api?.setDirty(dirty);
   }, [dirty]);
@@ -260,7 +276,7 @@ function App() {
   );
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (busy) return;
+      if (busy || home) return;
       if (
         e.target instanceof HTMLInputElement ||
         e.target instanceof HTMLTextAreaElement ||
@@ -311,6 +327,41 @@ function App() {
         if (e.dataTransfer.types.includes('Files')) e.preventDefault();
       }}
     >
+      {versions && (
+        <div className="modal-backdrop">
+          <section
+            className="settings-card"
+            role="dialog"
+            aria-label="版本历史"
+            style={{ maxHeight: '80vh', overflow: 'auto', width: 650 }}
+          >
+            <h2>版本历史</h2>
+            <p>每次手动保存建立检查点；恢复前自动保留当前工作副本。素材文件保留在工程内。</p>
+            {!versions.length && <p>尚无历史版本，请先保存工程。</p>}
+            {versions.map((v) => (
+              <div className="model-row" key={v.id}>
+                <span>
+                  {new Date(v.createdAt).toLocaleString()} · {v.label} · {v.clips} 个片段
+                </span>
+                <button
+                  disabled={!!busy}
+                  onClick={() =>
+                    api &&
+                    project &&
+                    void work('恢复历史版本…', async () => {
+                      load(await api.restoreVersion(v.id, project));
+                      setVersions(null);
+                    })
+                  }
+                >
+                  恢复此版本
+                </button>
+              </div>
+            ))}
+            <button onClick={() => setVersions(null)}>关闭</button>
+          </section>
+        </div>
+      )}
       <header>
         <div className="brand">
           <span className="brandmark">✂</span>CUTCUT<span className="badge">DESKTOP EDITOR</span>
@@ -320,6 +371,24 @@ function App() {
           {dirty && <i title="未保存"> •</i>}
         </div>
         <div className="header-actions">
+          <button
+            disabled={!project || !!busy || exporting}
+            onClick={() =>
+              api && void work('读取版本历史…', async () => setVersions(await api.versions()))
+            }
+          >
+            版本历史
+          </button>
+          {project && (
+            <button
+              onClick={() => {
+                setPlaying(false);
+                setHome(!home);
+              }}
+            >
+              {home ? '返回剪辑' : '工作台'}
+            </button>
+          )}
           <button onClick={() => setNewDialog(true)} disabled={!!busy || exporting || !api}>
             新建
           </button>
@@ -346,31 +415,16 @@ function App() {
           </button>
         </div>
       </header>
-      {!project ? (
-        <main className="welcome">
-          <div className="welcome-graphic">
-            <div></div>
-            <div></div>
-            <div></div>
-            <span>✂</span>
-          </div>
-          <p className="eyebrow">YOUR FOOTAGE. YOUR STORY.</p>
-          <h1>让素材，成为你的作品。</h1>
-          <p>
-            导入、剪辑、叠加、配乐。
-            <br />
-            从第一帧到最终成片，都在你的电脑上完成。
-          </p>
-          <button className="primary large" onClick={() => setNewDialog(true)} disabled={!api}>
-            ＋ 创建剪辑工程
-          </button>
-          <p className="welcome-hint">MP4 / MOV · JPG / PNG · MP3 / WAV / M4A</p>
-          {!api && (
-            <div className="notice">
-              当前为浏览器界面预览。请使用桌面应用启动，以访问本地文件和真实导出。
-            </div>
-          )}
-        </main>
+      {home || !project ? (
+        <Dashboard
+          hasProject={!!project}
+          onResume={() => setHome(false)}
+          onCreate={() => setNewDialog(true)}
+          onOpen={() => api && void work('正在打开…', async () => load(await api.open()))}
+          onRecent={(id) =>
+            api && void work('正在打开…', async () => load(await api.openRecent(id)))
+          }
+        />
       ) : (
         <>
           <div className="workspace">
@@ -569,6 +623,69 @@ function App() {
               {clip ? (
                 <div className="fields" key={clip.id}>
                   <p className="clip-title">{asset?.name || '文字片段'}</p>
+                  <h3>效果</h3>
+                  {asset && asset.kind !== 'audio' && (
+                    <button onClick={() => apply((p) => dissolve(p, selected, 15))}>
+                      与下一片段交叉溶解（15 帧）
+                    </button>
+                  )}
+                  {asset && asset.kind !== 'image' && (
+                    <label>
+                      播放速度{' '}
+                      <select
+                        aria-label="播放速度"
+                        value={clip.speed || 1}
+                        onChange={(e) => apply((p) => changeSpeed(p, selected, +e.target.value))}
+                      >
+                        {[0.25, 0.5, 1, 1.5, 2, 4].map((v) => (
+                          <option key={v} value={v}>
+                            {v}×
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  <NumberField
+                    label="淡入帧数"
+                    value={clip.fadeIn || 0}
+                    min={0}
+                    max={clip.duration}
+                    onChange={(n) => effectPatch({ fadeIn: n })}
+                  />
+                  <NumberField
+                    label="淡出帧数"
+                    value={clip.fadeOut || 0}
+                    min={0}
+                    max={clip.duration}
+                    onChange={(n) => effectPatch({ fadeOut: n })}
+                  />
+                  {asset && asset.kind !== 'audio' && (
+                    <>
+                      <p>关键帧：在播放头处记录当前属性，线性插值。</p>
+                      <button
+                        disabled={frame < clip.start || frame >= clip.start + clip.duration}
+                        onClick={() =>
+                          effectPatch({
+                            keyframes: [
+                              ...(clip.keyframes || []).filter(
+                                (k) => k.frame !== frame - clip.start,
+                              ),
+                              ...(['x', 'y', 'scale', 'opacity'] as const).map((property) => ({
+                                property,
+                                frame: frame - clip.start,
+                                value: clip[property],
+                                interpolation: 'linear' as const,
+                              })),
+                            ],
+                          })
+                        }
+                      >
+                        记录关键帧
+                      </button>
+                      <button onClick={() => effectPatch({ keyframes: [] })}>清除关键帧</button>
+                      <p>{new Set((clip.keyframes || []).map((k) => k.frame)).size} 个关键帧位置</p>
+                    </>
+                  )}
                   <h3>
                     时间 <small>单位：帧 / 30fps</small>
                   </h3>
@@ -1078,7 +1195,7 @@ function Trim({
               ? { duration: clip.duration + delta }
               : {
                   start: clip.start + delta,
-                  in: isStatic ? clip.in : clip.in + delta,
+                  in: isStatic ? clip.in : clip.in + Math.round(delta * (clip.speed || 1)),
                   duration: clip.duration - delta,
                 },
           );

@@ -1,6 +1,15 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { Bridge, ExportEvent } from '../shared/bridge';
 const bridge: Bridge = {
+  versions: () => ipcRenderer.invoke('project:versions'),
+  restoreVersion: (id, p) => ipcRenderer.invoke('project:restore-version', id, p),
+  testModel: (role) => ipcRenderer.invoke('studio:test-model', role),
+  dashboard: () => ipcRenderer.invoke('studio:dashboard'),
+  settings: () => ipcRenderer.invoke('studio:settings'),
+  updateSettings: (s) => ipcRenderer.invoke('studio:update-settings', s),
+  setKey: (p, k) => ipcRenderer.invoke('studio:key', p, k),
+  openRecent: (id) => ipcRenderer.invoke('project:open', id),
+  revealProject: (id) => ipcRenderer.invoke('studio:reveal', id),
   create: (...args) => ipcRenderer.invoke('project:create', ...args),
   open: () => ipcRenderer.invoke('project:open'),
   save: (p) => ipcRenderer.invoke('project:save', p),

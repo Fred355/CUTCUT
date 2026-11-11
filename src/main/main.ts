@@ -1,4 +1,6 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, Menu } from 'electron';
+import { callModel } from './providers';
+import { AppState } from './app-state';
+import { app, BrowserWindow, dialog, ipcMain, protocol, Menu, safeStorage, shell } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { mediaResponse } from './media-response';
@@ -18,6 +20,7 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 let win: BrowserWindow;
+let state: AppState;
 const store = new ProjectStore();
 let dirty = false,
   exporting: AbortController | null = null,
@@ -92,6 +95,36 @@ async function createWindow() {
   else await win.loadFile(path.join(__dirname, '../dist/index.html'));
 }
 app.whenReady().then(async () => {
+  state = new AppState(app.getPath('userData'), {
+    available: () =>
+      safeStorage.isEncryptionAvailable() &&
+      (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
+    encrypt: (value) => safeStorage.encryptString(value),
+    decrypt: (value) => safeStorage.decryptString(value),
+  });
+  await state.init();
+  register('studio:test-model', async (role) => {
+    if (!['planner', 'worker', 'vision'].includes(role)) throw new Error('模型角色无效');
+    const choice = state.view().settings[role as 'planner' | 'worker' | 'vision'];
+    const result = await callModel(
+      choice,
+      state.key(choice.provider),
+      {
+        instruction: 'Reply with OK only.',
+        text: 'Connection test.',
+        maxTokens: 256,
+      },
+      AbortSignal.timeout(30000),
+    );
+    return { inputTokens: result.inputTokens, outputTokens: result.outputTokens };
+  });
+  register('studio:dashboard', () => state.dashboard());
+  register('studio:settings', async () => state.view());
+  register('studio:update-settings', async (s) => state.update(s));
+  register('studio:key', async (p, k) => state.setKey(p, k));
+  register('studio:reveal', async (id) => {
+    shell.showItemInFolder(state.project(id).file);
+  });
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       { label: 'CUTCUT', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] },
@@ -105,6 +138,8 @@ app.whenReady().then(async () => {
   protocol.handle('cutcut-media', async (request) => {
     try {
       const u = new URL(request.url);
+      if (u.host === 'cover')
+        return mediaResponse(await state.cover(decodeURIComponent(u.pathname.slice(1))), request);
       if (u.host !== 'asset') throw new Error('无效媒体地址');
       const file = await store.media(
         decodeURIComponent(u.pathname.slice(1)),
@@ -125,16 +160,21 @@ app.whenReady().then(async () => {
     });
     if (d.canceled) return null;
     const p = await store.create(d.filePaths[0], name, portrait);
+    await state.register(p, store.file);
     dirty = false;
     return { project: p, missing: [], recovered: false };
   });
-  register('project:open', async () => {
+  register('project:open', async (recentId?: string) => {
     if (exporting) throw new Error('请等待导出结束');
     if (!confirmDiscard()) return null;
-    const d = await dialog.showOpenDialog(win, {
-      filters: [{ name: 'CUTCUT 工程', extensions: ['cutcut'] }],
-      properties: ['openFile'],
-    });
+    const recent = recentId ? state.project(recentId) : null;
+    const exists = recent && (await fs.stat(recent.file).catch(() => null));
+    const d = exists
+      ? { canceled: false, filePaths: [recent!.file] }
+      : await dialog.showOpenDialog(win, {
+          filters: [{ name: 'CUTCUT 工程', extensions: ['cutcut'] }],
+          properties: ['openFile'],
+        });
     if (d.canceled) return null;
     const file = d.filePaths[0];
     let recover = false;
@@ -154,11 +194,21 @@ app.whenReady().then(async () => {
       }
     } catch {}
     const opened = await store.read(file, recover);
+    await state.register(opened.project, store.file);
     dirty = recover;
+    return opened;
+  });
+  register('project:versions', async () => store.versions());
+  register('project:restore-version', async (id, current) => {
+    if (exporting) throw new Error('请等待导出结束');
+    const opened = await store.restoreVersion(id, current);
+    dirty = false;
+    await state.register(opened.project, store.file);
     return opened;
   });
   register('project:save', async (p: Project) => {
     await store.save(p);
+    await state.register(p, store.file);
     dirty = false;
   });
   register('project:autosave', async (p: Project) => store.autosave(p));
@@ -250,6 +300,7 @@ app.whenReady().then(async () => {
     const abort = new AbortController();
     exporting = abort;
     void exportVideo(p, store.root, target, font(), abort.signal, (event) => {
+      if (event.status === 'done') void state.exported().catch(() => {});
       if (!win.isDestroyed()) win.webContents.send('export:progress', event);
     })
       .catch((e) => {

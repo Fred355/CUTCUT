@@ -1,3 +1,4 @@
+import { fadeAt } from '../shared/effects';
 import { activeAt, sourceFrame, type Project, type Asset, type Clip } from '../shared/model';
 import type { Bridge } from '../shared/bridge';
 
@@ -7,6 +8,7 @@ type Entry = {
   active: boolean;
   needsSeek: boolean;
   pausedFrame?: number;
+  pausedSource?: number;
   pendingPlay: boolean;
   source?: MediaElementAudioSourceNode;
   gain?: GainNode;
@@ -103,17 +105,20 @@ export class PreviewMedia {
           entry.active = true;
           continue;
         }
+        el.playbackRate = clip.speed || 1;
+        el.preservesPitch = true;
         if (!playing) el.pause();
         const target = sourceFrame(clip, frame) / p.fps;
         const needsSeek =
           entry.needsSeek ||
           !entry.active ||
-          (!playing && entry.pausedFrame !== frame) ||
+          (!playing && (entry.pausedFrame !== frame || entry.pausedSource !== target)) ||
           (playing && Math.abs(el.currentTime - target) > 0.3);
         if (needsSeek && el.readyState >= 1 && !el.seeking) {
           if (Math.abs(el.currentTime - target) > 0.5 / p.fps) el.currentTime = target;
           entry.needsSeek = false;
           entry.pausedFrame = playing ? undefined : frame;
+          entry.pausedSource = target;
         }
         if (this.context && a.hasAudio) {
           if (!entry.source) {
@@ -122,7 +127,11 @@ export class PreviewMedia {
             entry.source.connect(entry.gain);
             entry.gain.connect(this.limiter!);
           }
-          entry.gain!.gain.value = clip.muted || track.muted ? 0 : clip.volume;
+          entry.gain!.gain.value =
+            clip.muted || track.muted
+              ? 0
+              : clip.volume *
+                fadeAt({ ...clip, fadeOut: clip.audioFadeOut || clip.fadeOut }, frame - clip.start);
         }
         const available = el.readyState >= 2 && !el.seeking && !entry.needsSeek;
         ready = ready && available;

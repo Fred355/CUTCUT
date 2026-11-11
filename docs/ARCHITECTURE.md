@@ -39,3 +39,21 @@ FFmpeg 独立进程通过参数数组启动，不通过 shell。每个剪辑片�
 模型测试覆盖边界和格式；媒体集成测试检验具体像素、音频 RMS、编解码和文件状态；Electron 测试执行实际按钮、拖动、裁剪、播放、保存重开和导出。macOS 必须另行验证系统对话框、音频设备、中文/外置卷路径、Keychain 无关（本版无密钥）、Apple Silicon/Intel 运行和签名公证。
 
 文件拖放由 preload 中的 Electron `webUtils.getPathForFile` 提取真实本地路径，再交给主进程导入；不接受渲染器伪造的 File 内容作为文件路径。主进程校验列表数量、绝对路径及普通文件类型，复用复制、探测和代理生成流程。
+
+## 生成工具方向（2026-11-11）
+
+新增需求指定制图使用 [leejet/stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)，音乐使用 [0xShug0/audio.cpp](https://github.com/0xShug0/audio.cpp)。
+当前阶段模型优先通过 API 接入；生成图像/音乐属于新增工作，不替代正在建设的初剪、转写和按句切分。
+设置页仅展示后端方向，不将未接入的引擎标记为可用。不得假设 Gemini 文本 API 同时提供图像或音乐生成。
+
+设置页的模型连接测试发送固定短文本，不发送项目素材；它仅验证指定模型的文本调用。
+视觉能力、语音能力和生成能力需要分别测试。密钥不保存在项目或仓库中。
+
+已核对 audio.cpp 上游说明：支持 macOS/Apple Silicon 与 Metal，包含音乐生成模型。具体模型权重许可独立于运行时许可；尚未在 M1 Pro 验证生成速度或效果。
+
+
+## 工程 version 2（新增效果）
+
+保留版本 1 读取；包含效果的新工程标记 version 2。Clip 增加可选 speed、fadeIn/fadeOut、audioFadeOut 和关键帧数组。关键帧包含 property、片段局部 frame、value、linear/hold 插值。共享 effects 模块定义预览数值与 FFmpeg 表达式，时间位置仍是整数帧；源定位乘以 speed。
+
+交叉溶解采用下一片段源头余量，在上层独立轨道淡入，第一片段仅淡出音频，保持下层画面直到边界。变速不会隐式移动其他片段；同轨重叠仍拒绝。现有限制详见 README。

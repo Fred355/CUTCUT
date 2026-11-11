@@ -1,3 +1,4 @@
+import { checkpoint, listVersions, readVersion } from './history';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -87,9 +88,31 @@ export class ProjectStore {
   }
   async save(p: Project) {
     p = this.validate(p);
+    const saved = projectSchema.parse(JSON.parse(await fs.readFile(this.file, 'utf8')));
+    await checkpoint(this.root, saved, '原保存版本');
+    await checkpoint(this.root, p, '保存检查点');
     await atomicWrite(this.file, JSON.stringify(p, null, 2));
     this.project = p;
     await fs.rm(path.join(this.root, '.cutcut-recovery.json'), { force: true });
+  }
+  async versions() {
+    if (!this.project) throw new Error('请先打开工程');
+    return listVersions(this.root, this.project.id);
+  }
+  async restoreVersion(id: string, current: Project) {
+    current = this.validate(current);
+    const record = await readVersion(this.root, id, current.id);
+    await checkpoint(this.root, current, '恢复前的工作副本');
+    const saved = projectSchema.parse(JSON.parse(await fs.readFile(this.file, 'utf8')));
+    await checkpoint(this.root, saved, '恢复前已保存版本');
+    await atomicWrite(this.file, JSON.stringify(record.project, null, 2));
+    this.project = record.project;
+    await fs.rm(path.join(this.root, '.cutcut-recovery.json'), { force: true });
+    return {
+      project: record.project,
+      missing: await this.missing(record.project),
+      recovered: false,
+    };
   }
   async autosave(p: Project) {
     p = this.validate(p);
