@@ -5,6 +5,7 @@ import {
   splitClip,
   moveClip,
   createClip,
+  createTextClip,
   centerClip,
   endFrame,
   errorMessage,
@@ -16,7 +17,7 @@ import {
   type Asset,
 } from '../shared/model';
 import type { Bridge, ExportEvent, Opened } from '../shared/bridge';
-import { Preview } from './Preview';
+import { Preview, type PreviewHandle } from './Preview';
 import './style.css';
 const api = window.cutcut;
 const timecode = (f: number) =>
@@ -40,6 +41,8 @@ function App() {
     [newDialog, setNewDialog] = useState(false),
     [name, setName] = useState('我的第一支影片'),
     [portrait, setPortrait] = useState(false);
+  const preview = useRef<PreviewHandle>(null);
+  const [draggingFiles, setDraggingFiles] = useState(false);
   const undo = useRef<Project[]>([]),
     redo = useRef<Project[]>([]),
     revision = useRef(0),
@@ -117,19 +120,32 @@ function App() {
     clip = selectedTrack?.clips.find((c) => c.id === selected),
     asset = project?.assets.find((a) => a.id === clip?.assetId);
   const exporting = job?.status === 'rendering' || job?.status === 'validating';
-  const importFiles = () =>
+  const importFiles = (files?: File[]) =>
     api &&
     work('正在复制素材并准备预览…', async () => {
-      const result = await api.importAssets();
-      if (projectRef.current && result.assets.length) {
+      const result = files ? await api.importDroppedFiles(files) : await api.importAssets();
+      if (projectRef.current && result.assets.length)
         commit({ ...projectRef.current, assets: [...projectRef.current.assets, ...result.assets] });
-      }
       setMessage(
         result.errors.length
           ? result.errors.join('\n')
           : `已导入 ${result.assets.length} 个素材，拖入轨道开始剪辑`,
       );
     });
+  const togglePlayback = () => {
+    if (playing) {
+      setPlaying(false);
+      return;
+    }
+    if (!project || !endFrame(project)) return;
+    void preview.current
+      ?.activateAudio()
+      .then(() => {
+        if (frame >= endFrame(project) - 1) setFrame(0);
+        setPlaying(true);
+      })
+      .catch((error) => setMessage(`无法启动音频：${errorMessage(error)}`));
+  };
   const addAsset = (a: Asset, trackId?: string, start?: number) => {
     if (!project) return;
     apply((p) => {
@@ -170,20 +186,50 @@ function App() {
     }));
   const addText = () =>
     apply((p) => {
-      const tracks = structuredClone(p.tracks);
-      let t = tracks.find((t) => t.kind === 'text');
+      const c = createTextClip(p, selected, frame),
+        tracks = structuredClone(p.tracks);
+      let t = tracks.find(
+        (t) =>
+          t.kind === 'text' &&
+          t.clips.every(
+            (other) =>
+              other.start + other.duration <= c.start || c.start + c.duration <= other.start,
+          ),
+      );
       if (!t) {
-        t = { id: uid(), name: '文字 01', kind: 'text', muted: false, clips: [] };
+        t = {
+          id: uid(),
+          name: `文字 ${tracks.filter((t) => t.kind === 'text').length + 1}`,
+          kind: 'text',
+          muted: false,
+          clips: [],
+        };
         tracks.unshift(t);
       }
-      const c = {
-        ...createClip(p, undefined, Math.max(frame, ...t.clips.map((c) => c.start + c.duration))),
-        x: 80,
-        y: p.height - 160,
-      };
       t.clips.push(c);
       setSelected(c.id);
       return { ...p, tracks };
+    });
+  const addPictureInPicture = (a: Asset) =>
+    apply((p) => {
+      const c = { ...createClip(p, a, frame), scale: 0.3 };
+      const fit = Math.min(p.width / a.width, p.height / a.height) * c.scale;
+      c.x = Math.round(p.width - a.width * fit - 60);
+      c.y = Math.round(p.height - a.height * fit - 60);
+      setSelected(c.id);
+      return {
+        ...p,
+        tracks: [
+          {
+            id: uid(),
+            name: `画中画 ${p.tracks.length + 1}`,
+            kind: a.kind,
+            muted: false,
+            clips: [c],
+          },
+          ...p.tracks,
+        ],
+      };
     });
   const remove = () =>
     apply((p) => ({
@@ -230,7 +276,7 @@ function App() {
         history(!e.shiftKey);
       } else if (e.code === 'Space') {
         e.preventDefault();
-        if (project && endFrame(project)) setPlaying((v) => !v);
+        togglePlayback();
       } else if (project && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
         e.preventDefault();
         setPlaying(false);
@@ -255,7 +301,16 @@ function App() {
           ? '导出完成'
           : '';
   return (
-    <div className="app" data-busy={!!busy}>
+    <div
+      className="app"
+      data-busy={!!busy}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes('Files')) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        if (e.dataTransfer.types.includes('Files')) e.preventDefault();
+      }}
+    >
       <header>
         <div className="brand">
           <span className="brandmark">✂</span>CUTCUT<span className="badge">DESKTOP EDITOR</span>
@@ -319,16 +374,42 @@ function App() {
       ) : (
         <>
           <div className="workspace">
-            <aside className="library">
+            <aside
+              className={`library ${draggingFiles ? 'file-drop-active' : ''}`}
+              aria-label="素材库"
+              onDragEnter={(e) => {
+                if (e.dataTransfer.types.includes('Files')) {
+                  e.preventDefault();
+                  setDraggingFiles(true);
+                }
+              }}
+              onDragOver={(e) => {
+                if (e.dataTransfer.types.includes('Files')) {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = busy ? 'none' : 'copy';
+                }
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) setDraggingFiles(false);
+              }}
+              onDrop={(e) => {
+                if (!e.dataTransfer.types.includes('Files')) return;
+                e.preventDefault();
+                e.stopPropagation();
+                setDraggingFiles(false);
+                if (!busy) void importFiles(Array.from(e.dataTransfer.files));
+              }}
+            >
+              {draggingFiles && <div className="file-drop-hint">松开以导入视频、照片或音频</div>}
               <div className="panel-heading">
                 <h2>
                   素材库 <span>{project.assets.length}</span>
                 </h2>
-                <button title="导入素材" onClick={importFiles} disabled={!!busy}>
+                <button title="导入素材" onClick={() => void importFiles()} disabled={!!busy}>
                   ＋ 导入
                 </button>
               </div>
-              <div className="library-sub">项目内副本 · 原始文件保持不变</div>
+              <div className="library-sub">支持从 Finder 拖入 · 原始文件保持不变</div>
               <div className="asset-list">
                 {project.assets.map((a) => (
                   <div
@@ -343,7 +424,12 @@ function App() {
                       {a.kind === 'audio' ? (
                         <span>♫</span>
                       ) : (
-                        <img src={api!.mediaURL(a.id, 'thumbnail') + '&v=' + encodeURIComponent(a.path)} alt="" />
+                        <img
+                          src={
+                            api!.mediaURL(a.id, 'thumbnail') + '&v=' + encodeURIComponent(a.path)
+                          }
+                          alt=""
+                        />
                       )}
                       <small>{a.kind === 'image' ? '照片' : timecode(a.durationFrames)}</small>
                     </div>
@@ -372,9 +458,16 @@ function App() {
                         重新定位
                       </button>
                     ) : (
-                      <button title="添加到时间线" onClick={() => addAsset(a)}>
-                        ＋
-                      </button>
+                      <>
+                        <button title="添加到时间线" onClick={() => addAsset(a)}>
+                          ＋
+                        </button>
+                        {a.kind !== 'audio' && (
+                          <button title="添加画中画" onClick={() => addPictureInPicture(a)}>
+                            ▣
+                          </button>
+                        )}
+                      </>
                     )}
                   </div>
                 ))}
@@ -387,7 +480,7 @@ function App() {
                       <br />
                       再拖入下方时间线
                     </small>
-                    <button onClick={importFiles} disabled={!!busy}>
+                    <button onClick={() => void importFiles()} disabled={!!busy}>
                       选择本地文件
                     </button>
                   </div>
@@ -403,6 +496,15 @@ function App() {
               </div>
               <div className="canvas-area">
                 <Preview
+                  ref={preview}
+                  key={project.id}
+                  selected={selected}
+                  onSelect={setSelected}
+                  onTransform={(id, patch) => apply((p) => changeClip(p, id, patch))}
+                  onError={(message) => {
+                    setMessage(message);
+                    setPlaying(false);
+                  }}
                   project={project}
                   frame={frame}
                   playing={playing}
@@ -430,10 +532,7 @@ function App() {
                     className="play"
                     title={playing ? '暂停' : '播放'}
                     disabled={!endFrame(project)}
-                    onClick={() => {
-                      if (frame >= endFrame(project) - 1) setFrame(0);
-                      setPlaying((v) => !v);
-                    }}
+                    onClick={togglePlayback}
                   >
                     {playing ? 'Ⅱ' : '▶'}
                   </button>
@@ -535,6 +634,21 @@ function App() {
                   {selectedTrack!.kind === 'text' && (
                     <>
                       <h3>文字</h3>
+                      <button
+                        onClick={() =>
+                          patch({
+                            start: 0,
+                            duration: Math.max(
+                              1,
+                              ...project.tracks
+                                .filter((t) => t.kind === 'video')
+                                .flatMap((t) => t.clips.map((c) => c.start + c.duration)),
+                            ),
+                          })
+                        }
+                      >
+                        覆盖视频全程
+                      </button>
                       <textarea
                         aria-label="文字内容"
                         value={clip.text}

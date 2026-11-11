@@ -204,3 +204,16 @@ export function errorMessage(error: unknown) {
       ? error.message
       : String(error);
 }
+
+/** Captions live on their own track; splitting video must not truncate their time range. */
+export function createTextClip(p: Project, selected: string, frame: number): Clip {
+  const videos = p.tracks.filter((t) => t.kind === 'video').flatMap((t) => t.clips);
+  const source = videos.find((c) => c.id === selected) || videos.find((c) => activeAt(c, frame));
+  const start = source ? source.start : frame;
+  return {
+    ...createClip(p, undefined, start),
+    duration: source ? source.duration : Math.max(90, endFrame(p) - start),
+    x: 80,
+    y: p.height - 160,
+  };
+}

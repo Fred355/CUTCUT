@@ -76,3 +76,41 @@ test('不信任外部工程：拒绝路径遍历、重复 ID、非法数值与�
   const q = fixture();
   assert.throws(() => changeClip(q, q.tracks[1].clips[0].id, { x: Infinity }));
 });
+
+test('拆分保留音量、静音和独立文字轨的完整时间范围', async () => {
+  const { createTextClip } = await import('../src/shared/model');
+  let p = fixture();
+  const video = p.tracks[1].clips[0];
+  video.volume = 0.4;
+  const caption = createTextClip(p, video.id, 100);
+  p.tracks[0].clips = [caption];
+  assert.equal(caption.start, 0);
+  assert.equal(caption.duration, 300);
+  p = splitClip(p, video.id, 120);
+  assert.deepEqual(
+    p.tracks[1].clips.map((c) => [c.volume, c.muted, c.in]),
+    [
+      [0.4, false, 0],
+      [0.4, false, 120],
+    ],
+  );
+  assert.deepEqual(p.tracks[0].clips, [caption]);
+  // Explicitly shortened existing captions are never silently extended by splitting video.
+  p.tracks[0].clips[0].duration = 60;
+  p = splitClip(p, p.tracks[1].clips[1].id, 180);
+  assert.equal(p.tracks[0].clips[0].duration, 60);
+});
+
+test('画布四角缩放保持比例、锚点和文字字号范围', async () => {
+  const { resizeVisual } = await import('../src/shared/transform');
+  const p = fixture(),
+    c = p.tracks[1].clips[0];
+  const rect = { x: 100, y: 200, width: 800, height: 600 };
+  assert.deepEqual(resizeVisual(c, rect, 'se', { x: 500, y: 500 }), { scale: 0.5, x: 100, y: 200 });
+  assert.deepEqual(resizeVisual(c, rect, 'nw', { x: 500, y: 500 }), { scale: 0.5, x: 500, y: 500 });
+  const text = { ...c, text: '中文', fontSize: 64 };
+  const patch = resizeVisual(text, rect, 'se', { x: 500, y: 500 });
+  assert.equal(patch.fontSize, 32);
+  assert.equal(patch.scale, undefined);
+  assert.equal(resizeVisual(text, rect, 'se', { x: 100000, y: 100000 }).fontSize, 400);
+});

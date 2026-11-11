@@ -1,71 +1,95 @@
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { textLines } from '../shared/text';
-import { useEffect, useRef } from 'react';
-import { activeAt, clipRect, endFrame, sourceFrame, type Project } from '../shared/model';
+import { activeAt, clipRect, endFrame, type Clip, type Project } from '../shared/model';
+import { visualRect, resizeVisual, type Corner, type Rect } from '../shared/transform';
 import type { Bridge } from '../shared/bridge';
-type Entry = { element: HTMLVideoElement | HTMLAudioElement | HTMLImageElement; gain?: GainNode };
-export function Preview({
-  project,
-  frame,
-  playing,
-  onFrame,
-  onStop,
-  bridge,
-}: {
+import { PreviewMedia } from './preview-media';
+export type PreviewHandle = { activateAudio: () => Promise<void> };
+type Props = {
   project: Project;
   frame: number;
   playing: boolean;
-  onFrame: (f: number) => void;
+  onFrame: (frame: number) => void;
   onStop: () => void;
   bridge: Bridge;
-}) {
+  selected: string;
+  onSelect: (id: string) => void;
+  onTransform: (id: string, patch: Partial<Clip>) => void;
+  onError: (message: string) => void;
+};
+export const Preview = forwardRef<PreviewHandle, Props>(function Preview(props, ref) {
+  const { project, frame, playing, bridge, selected } = props;
   const canvas = useRef<HTMLCanvasElement>(null),
-    pool = useRef(new Map<string, Entry>()),
-    context = useRef<AudioContext | null>(null),
-    limiter = useRef<DynamicsCompressorNode | null>(null),
-    state = useRef({ project, frame, playing, onFrame, onStop });
-  state.current = { project, frame, playing, onFrame, onStop };
+    host = useRef<HTMLDivElement>(null),
+    svg = useRef<SVGSVGElement>(null),
+    engine = useRef<PreviewMedia | null>(null),
+    state = useRef(props);
+  state.current = props;
+  const [draft, setDraft] = useState<{ id: string; patch: Partial<Clip> } | null>(null),
+    draftRef = useRef(draft);
+  draftRef.current = draft;
+  const gesture = useRef<{
+    id: number;
+    start: { x: number; y: number };
+    clip: Clip;
+    rect: Rect;
+    corner?: Corner;
+    patch: Partial<Clip>;
+  } | null>(null);
   const clock = useRef({ time: 0, frame: 0 });
+  useImperativeHandle(
+    ref,
+    () => ({
+      activateAudio: async () => {
+        await engine.current?.activateAudio();
+      },
+    }),
+    [],
+  );
   useEffect(() => {
     clock.current = { time: performance.now(), frame };
   }, [playing]);
   useEffect(() => {
-    const ids = new Set(project.tracks.flatMap((t) => t.clips.map((c) => c.id)));
-    for (const [id, e] of pool.current)
-      if (!ids.has(id)) {
-        if (e.element instanceof HTMLMediaElement) {
-          e.element.pause();
-          e.element.removeAttribute('src');
-          e.element.load();
-        }
-        e.gain?.disconnect();
-        pool.current.delete(id);
-      }
-  }, [project]);
-  useEffect(() => {
-    let raf = 0;
+    const media = new PreviewMedia(bridge, host.current!, (message) =>
+      state.current.onError(message),
+    );
+    engine.current = media;
+    let raf = 0,
+      lastError = '';
     const draw = () => {
-      const s = state.current,
-        p = s.project;
-      let f = s.frame;
-      if (s.playing) {
-        f =
-          clock.current.frame +
-          Math.floor(((performance.now() - clock.current.time) / 1000) * p.fps);
-        if (f >= endFrame(p)) {
-          f = Math.max(0, endFrame(p) - 1);
-          s.onStop();
+      // Schedule first so a failed decode/audio operation cannot permanently kill the preview loop.
+      raf = requestAnimationFrame(draw);
+      try {
+        const s = state.current,
+          p = s.project;
+        const total = endFrame(p);
+        let f = s.frame;
+        if (s.playing) {
+          f =
+            clock.current.frame +
+            Math.floor(((performance.now() - clock.current.time) / 1000) * p.fps);
+          if (f >= total) {
+            f = Math.max(0, total - 1);
+            s.onStop();
+          }
+          if (f !== s.frame) s.onFrame(f);
         }
-        if (f !== s.frame) s.onFrame(f);
-      }
-      const ctx = canvas.current?.getContext('2d');
-      if (ctx) {
+        const ready = media.sync(p, f, s.playing);
+        if (!ready) {
+          if (s.playing) clock.current = { time: performance.now(), frame: f };
+          return;
+        }
+        const ctx = canvas.current!.getContext('2d')!;
+        ctx.globalAlpha = 1;
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, p.width, p.height);
-        const active = new Set<string>();
         for (const t of [...p.tracks].reverse())
-          for (const c of t.clips) {
-            if (!activeAt(c, f)) continue;
-            active.add(c.id);
+          for (const original of t.clips) {
+            if (!activeAt(original, f)) continue;
+            const c =
+              draftRef.current?.id === original.id
+                ? { ...original, ...draftRef.current.patch }
+                : original;
             ctx.globalAlpha = c.opacity;
             if (t.kind === 'text') {
               ctx.font = `${c.fontSize}px CutcutSans`;
@@ -75,87 +99,141 @@ export function Preview({
                 ctx.fillText(line.text, line.x, line.y);
               continue;
             }
-            const a = p.assets.find((a) => a.id === c.assetId);
-            if (!a) continue;
-            let entry = pool.current.get(c.id);
-            const src = bridge.mediaURL(a.id) + '&v=' + encodeURIComponent(a.path);
-            if (entry && entry.element.getAttribute('src') !== src) {
-              if (entry.element instanceof HTMLMediaElement) entry.element.pause();
-              entry.gain?.disconnect();
-              pool.current.delete(c.id);
-              entry = undefined;
-            }
-            if (!entry) {
-              const element =
-                a.kind === 'image'
-                  ? new Image()
-                  : document.createElement(a.kind === 'audio' ? 'audio' : 'video');
-              element.crossOrigin = 'anonymous';
-              element.src = src;
-              if (element instanceof HTMLMediaElement) {
-                element.preload = 'auto';
-                if (element instanceof HTMLVideoElement) element.playsInline = true;
-              }
-              entry = { element };
-              pool.current.set(c.id, entry);
-            }
-            const el = entry.element;
-            if (el instanceof HTMLMediaElement) {
-              if (s.playing && !context.current) {
-                context.current = new AudioContext();
-                limiter.current = context.current.createDynamicsCompressor();
-                limiter.current.threshold.value = -0.5;
-                limiter.current.knee.value = 0;
-                limiter.current.ratio.value = 20;
-                limiter.current.attack.value = 0.003;
-                limiter.current.release.value = 0.1;
-                limiter.current.connect(context.current.destination);
-              }
-              if (context.current && !entry.gain) {
-                const source = context.current.createMediaElementSource(el);
-                entry.gain = context.current.createGain();
-                source.connect(entry.gain);
-                entry.gain.connect(limiter.current!);
-              }
-              if (entry.gain) entry.gain.gain.value = c.muted || t.muted ? 0 : c.volume;
-              const time = sourceFrame(c, f) / p.fps;
-              if (el.readyState >= 1 && Math.abs(el.currentTime - time) > (s.playing ? 0.12 : 0.01))
-                el.currentTime = time;
-              if (s.playing) {
-                if (context.current?.state === 'suspended') void context.current.resume();
-                if (el.paused) void el.play().catch(() => {});
-              } else el.pause();
-            }
-            if (a.kind !== 'audio') {
+            const a = p.assets.find((a) => a.id === c.assetId),
+              image = media.image(c.id);
+            if (a && a.kind !== 'audio' && image) {
               const r = clipRect(p, a, c);
-              try {
-                ctx.drawImage(
-                  el as HTMLVideoElement | HTMLImageElement,
-                  r.x,
-                  r.y,
-                  r.width,
-                  r.height,
-                );
-              } catch {}
+              ctx.drawImage(image, r.x, r.y, r.width, r.height);
             }
           }
         ctx.globalAlpha = 1;
-        for (const [id, e] of pool.current)
-          if (!active.has(id) && e.element instanceof HTMLMediaElement) e.element.pause();
+      } catch (error) {
+        const message = `预览失败：${error instanceof Error ? error.message : String(error)}`;
+        if (message !== lastError) {
+          lastError = message;
+          state.current.onError(message);
+        }
       }
-      raf = requestAnimationFrame(draw);
     };
     raf = requestAnimationFrame(draw);
     return () => {
       cancelAnimationFrame(raf);
-      for (const entry of pool.current.values())
-        if (entry.element instanceof HTMLMediaElement) entry.element.pause();
-      void context.current?.close();
-      pool.current.clear();
-      context.current = null;
+      media.dispose();
+      engine.current = null;
     };
   }, [bridge, project.id]);
+  const measure = (text: string, size: number) => {
+    const ctx = canvas.current?.getContext('2d');
+    if (!ctx) return text.length * size;
+    ctx.font = `${size}px CutcutSans`;
+    return ctx.measureText(text).width;
+  };
+  const visuals = project.tracks
+    .filter((t) => t.kind !== 'audio')
+    .flatMap((t) => t.clips.filter((c) => activeAt(c, frame)))
+    .map((c) => (draft?.id === c.id ? { ...c, ...draft.patch } : c));
+  const chosen = visuals.find((c) => c.id === selected),
+    box = chosen ? visualRect(project, chosen, measure) : null;
+  const point = (e: { clientX: number; clientY: number }) => {
+    const matrix = svg.current!.getScreenCTM();
+    return matrix
+      ? new DOMPoint(e.clientX, e.clientY).matrixTransform(matrix.inverse())
+      : { x: 0, y: 0 };
+  };
+  const finish = (cancel = false) => {
+    const g = gesture.current;
+    gesture.current = null;
+    setDraft(null);
+    if (g && !cancel && Object.keys(g.patch).length) state.current.onTransform(g.clip.id, g.patch);
+  };
   return (
-    <canvas ref={canvas} width={project.width} height={project.height} aria-label="工程合成预览" />
+    <div className="preview-stage">
+      <canvas
+        ref={canvas}
+        width={project.width}
+        height={project.height}
+        aria-label="工程合成预览"
+      />
+      <div className="preview-media" ref={host} aria-hidden="true" />
+      <svg
+        ref={svg}
+        className="preview-transform"
+        viewBox={`0 0 ${project.width} ${project.height}`}
+        aria-label="预览图层操作区"
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          const at = point(e),
+            corner = (e.target as SVGElement).dataset.corner as Corner | undefined;
+          const hit = corner
+            ? chosen
+            : visuals.find((c) => {
+                const r = visualRect(project, c, measure);
+                return (
+                  r && at.x >= r.x && at.y >= r.y && at.x <= r.x + r.width && at.y <= r.y + r.height
+                );
+              });
+          props.onStop();
+          props.onSelect(hit?.id || '');
+          if (!hit) return;
+          const rect = visualRect(project, hit, measure);
+          if (!rect) return;
+          gesture.current = {
+            id: e.pointerId,
+            start: at,
+            clip: { ...hit },
+            rect,
+            corner,
+            patch: {},
+          };
+          e.currentTarget.setPointerCapture(e.pointerId);
+          e.preventDefault();
+        }}
+        onPointerMove={(e) => {
+          const g = gesture.current;
+          if (!g || g.id !== e.pointerId) return;
+          const at = point(e);
+          g.patch = g.corner
+            ? resizeVisual(g.clip, g.rect, g.corner, at)
+            : {
+                x: Math.max(-8192, Math.min(8192, Math.round(g.clip.x + at.x - g.start.x))),
+                y: Math.max(-8192, Math.min(8192, Math.round(g.clip.y + at.y - g.start.y))),
+              };
+          setDraft({ id: g.clip.id, patch: g.patch });
+        }}
+        onPointerUp={(e) => {
+          if (gesture.current?.id === e.pointerId) finish();
+        }}
+        onPointerCancel={() => finish(true)}
+        onLostPointerCapture={() => {
+          if (gesture.current) finish(true);
+        }}
+      >
+        {box && (
+          <g>
+            <rect
+              className="selection-outline"
+              x={box.x}
+              y={box.y}
+              width={box.width}
+              height={box.height}
+              vectorEffect="non-scaling-stroke"
+            />
+            {(['nw', 'ne', 'sw', 'se'] as Corner[]).map((corner) => (
+              <rect
+                key={corner}
+                data-corner={corner}
+                className={`resize-handle ${corner}`}
+                aria-label={`缩放图层 ${corner}`}
+                x={(corner.endsWith('w') ? box.x : box.x + box.width) - 14}
+                y={(corner.startsWith('n') ? box.y : box.y + box.height) - 14}
+                width={28}
+                height={28}
+                vectorEffect="non-scaling-stroke"
+              />
+            ))}
+          </g>
+        )}
+      </svg>
+    </div>
   );
-}
+});

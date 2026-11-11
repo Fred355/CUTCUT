@@ -1,7 +1,7 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, net, Menu } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol, Menu } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { mediaResponse } from './media-response';
 import { ProjectStore } from './store';
 import { exportVideo } from './exporter';
 import { errorMessage, type Project } from '../shared/model';
@@ -110,12 +110,7 @@ app.whenReady().then(async () => {
         decodeURIComponent(u.pathname.slice(1)),
         u.searchParams.get('kind') || 'preview',
       );
-      const response = await net.fetch(pathToFileURL(file).toString(), {
-        headers: request.headers,
-      });
-      const headers = new Headers(response.headers);
-      headers.set('Access-Control-Allow-Origin', '*');
-      return new Response(response.body, { status: response.status, headers });
+      return await mediaResponse(file, request);
     } catch {
       return new Response('素材不可用', { status: 404 });
     }
@@ -178,17 +173,31 @@ app.whenReady().then(async () => {
         },
       ],
     });
+    return importPaths(d.filePaths);
+  });
+  async function importPaths(paths: unknown) {
+    if (!store.project) throw new Error('请先创建工程');
+    if (
+      !Array.isArray(paths) ||
+      paths.length > 200 ||
+      paths.some(
+        (file) => typeof file !== 'string' || !path.isAbsolute(file) || file.includes('\0'),
+      )
+    )
+      throw new Error('导入文件列表无效（每批最多 200 个文件）');
     const assets = [],
       errors = [];
-    for (const file of d.filePaths) {
+    for (const file of paths as string[]) {
       try {
+        if (!(await fs.stat(file)).isFile()) throw new Error('请选择文件，不支持拖入文件夹');
         assets.push(await store.importOne(file));
-      } catch (e) {
-        errors.push(`${path.basename(file)}：${errorMessage(e)}`);
+      } catch (error) {
+        errors.push(`${path.basename(file)}：${errorMessage(error)}`);
       }
     }
     return { assets, errors };
-  });
+  }
+  register('assets:import-paths', importPaths);
   register('assets:relink', async (id: string) => {
     const d = await dialog.showOpenDialog(win, {
       title: '选择同一份原始素材',

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { Bridge, ExportEvent } from '../shared/bridge';
 const bridge: Bridge = {
   create: (...args) => ipcRenderer.invoke('project:create', ...args),
@@ -6,6 +6,12 @@ const bridge: Bridge = {
   save: (p) => ipcRenderer.invoke('project:save', p),
   autosave: (p) => ipcRenderer.invoke('project:autosave', p),
   importAssets: () => ipcRenderer.invoke('assets:import'),
+  importDroppedFiles: (files) => {
+    const paths = files.map((file) => webUtils.getPathForFile(file));
+    if (!paths.length || paths.some((file) => !file))
+      return Promise.reject(new Error('无法读取拖入文件，请从 Finder 拖入本地文件。'));
+    return ipcRenderer.invoke('assets:import-paths', paths);
+  },
   relink: (id) => ipcRenderer.invoke('assets:relink', id),
   export: (p) => ipcRenderer.invoke('export:start', p),
   cancelExport: () => ipcRenderer.invoke('export:cancel'),

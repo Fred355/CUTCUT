@@ -10,6 +10,7 @@ export interface Bridge {
   open(): Promise<Opened | null>;
   save(p: Project): Promise<void>;
   autosave(p: Project): Promise<void>;
+  importDroppedFiles(files: File[]): Promise<{ assets: Project['assets']; errors: string[] }>;
   importAssets(): Promise<{ assets: Project['assets']; errors: string[] }>;
   relink(id: string): Promise<Project['assets'][number] | null>;
   export(p: Project): Promise<boolean>;

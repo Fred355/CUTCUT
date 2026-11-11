@@ -160,7 +160,25 @@ test('桌面导入、多轨编辑、保存重开与真实 MP4 导出', async ({}
     await page.getByLabel('播放位置').fill('35');
     await expect(page.locator('.timeline-clip')).toHaveCount(5);
     await page.getByTitle('播放', { exact: true }).click();
-    await page.waitForTimeout(350);
+    await expect
+      .poll(async () => Number(await page.getByLabel('播放位置').inputValue()), {
+        message: '等待媒体缓冲后播放头推进',
+      })
+      .toBeGreaterThan(35);
+    const audioURL = await page.locator('.preview-media audio').getAttribute('src');
+    const partial = await desktop.evaluate(async ({ net }, url) => {
+      const response = await net.fetch(url!, { headers: { Range: 'bytes=44-63' } });
+      return {
+        status: response.status,
+        range: response.headers.get('content-range'),
+        length: response.headers.get('content-length'),
+        bytes: (await response.arrayBuffer()).byteLength,
+      };
+    }, audioURL);
+    expect(partial.status).toBe(206);
+    expect(partial.range).toMatch(/^bytes 44-63\//);
+    expect(partial.length).toBe('20');
+    expect(partial.bytes).toBe(20);
     await page.getByTitle('暂停', { exact: true }).click();
     const frame = await page.getByLabel('播放位置').inputValue();
     expect(Number(frame)).toBeGreaterThan(35);
