@@ -1,3 +1,4 @@
+import type { ServiceSettings } from './services';
 import { z } from 'zod';
 import {
   centerClip,
@@ -9,13 +10,38 @@ import {
   type Project,
 } from './model';
 
-export const providers = ['openai', 'anthropic', 'gemini', 'deepseek'] as const;
+export const providers = [
+  'openai',
+  'anthropic',
+  'gemini',
+  'deepseek',
+  'groq',
+  'openrouter',
+  'zai',
+  'siliconflow',
+  'requesty',
+  'huggingface',
+  'cloudflare',
+  'cerebras',
+  'bailian',
+  'compatible',
+] as const;
 export type Provider = (typeof providers)[number];
 export const providerNames: Record<Provider, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic / Claude',
   gemini: 'Google / Gemini',
   deepseek: 'DeepSeek',
+  groq: 'Groq',
+  openrouter: 'OpenRouter',
+  zai: 'Z.AI',
+  siliconflow: 'SiliconFlow',
+  requesty: 'Requesty',
+  huggingface: 'Hugging Face',
+  cloudflare: 'Cloudflare Workers AI',
+  cerebras: 'Cerebras',
+  bailian: '阿里云百炼',
+  compatible: '自定义 OpenAI 兼容 API',
 };
 export const themes = ['blue', 'lime', 'purple', 'light'] as const;
 export const themeNames = { blue: '深海蓝', lime: '荧光绿', purple: '紫色', light: '浅色' };
@@ -23,18 +49,31 @@ export const modelChoiceSchema = z.object({
   provider: z.enum(providers),
   model: z.string().trim().max(150),
   vision: z.boolean(),
+  serviceId: z.string().optional(),
+  serviceName: z.string().optional(),
+  mode: z.enum(['local', 'cloud']).optional(),
+  auth: z.enum(['none', 'bearer', 'provider']).optional(),
+  protocol: z.enum(['openai', 'anthropic', 'gemini']).optional(),
+  timeoutSeconds: z.number().optional(),
+  baseURL: z.string().max(500).optional(),
+  accountId: z
+    .string()
+    .regex(/^[a-fA-F0-9]{0,32}$/)
+    .optional(),
+  region: z.enum(['cn', 'intl']).optional(),
 });
 export type ModelChoice = z.infer<typeof modelChoiceSchema>;
-export const settingsSchema = z.object({
+export const legacySettingsSchema = z.object({
   version: z.literal(1),
   theme: z.enum(themes),
   planner: modelChoiceSchema,
   worker: modelChoiceSchema,
   vision: modelChoiceSchema,
-  speech: z.enum(['local', 'openai']),
+  speech: z.enum(['local', 'openai', 'groq']),
   language: z.enum(['auto', 'zh', 'en']),
+  speechService: modelChoiceSchema.optional(),
 });
-export type Settings = z.infer<typeof settingsSchema>;
+export type Settings = z.infer<typeof legacySettingsSchema>;
 export const defaultSettings: Settings = {
   version: 1,
   theme: 'blue',
@@ -45,8 +84,8 @@ export const defaultSettings: Settings = {
   language: 'auto',
 };
 export type SettingsView = {
-  settings: Settings;
-  keys: Record<Provider, boolean>;
+  settings: ServiceSettings;
+  keys: Record<string, boolean>;
   secureStorage: boolean;
 };
 export type RecentProject = {
@@ -99,17 +138,11 @@ export function mappedSentences(transcript: Transcript, clip: Clip, fps = 30) {
       clip.in + clip.duration * (clip.speed || 1),
       Math.round((s.endMs * fps) / 1000),
     );
-    return to > from && s.text.trim()
-      ? [
-          {
-            ...s,
-            start: clip.start + Math.round((from - clip.in) / (clip.speed || 1)),
-            duration:
-              Math.round((to - clip.in) / (clip.speed || 1)) -
-              Math.round((from - clip.in) / (clip.speed || 1)),
-          },
-        ]
-      : [];
+    const start = clip.start + Math.round((from - clip.in) / (clip.speed || 1));
+    const duration =
+      Math.round((to - clip.in) / (clip.speed || 1)) -
+      Math.round((from - clip.in) / (clip.speed || 1));
+    return to > from && duration > 0 && s.text.trim() ? [{ ...s, start, duration }] : [];
   });
 }
 export function sentenceCuts(transcript: Transcript, clip: Clip, fps = 30): number[] {
@@ -286,6 +319,7 @@ export type AIRequest = {
   targetSeconds?: number;
   portrait?: boolean;
   cloudConsent: boolean;
+  routeRevision?: number;
 };
 export type AIResult = {
   transcript?: Transcript;
@@ -298,6 +332,7 @@ export type AIJob = {
   id: string;
   projectId: string;
   inputHash: string;
+  configurationRevision?: number;
   kind: AIRequest['kind'];
   status: 'running' | 'done' | 'cancelled' | 'error';
   stage: string;
@@ -305,6 +340,7 @@ export type AIJob = {
   inputTokens: number;
   outputTokens: number;
   calls: number;
+  usage?: { kind: 'local' | 'cloud'; input: number | null; output: number | null }[];
   message?: string;
   result?: AIResult;
 };

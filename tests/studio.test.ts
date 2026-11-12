@@ -70,3 +70,12 @@ test('初剪拒绝未知素材、源越界及画面重叠', () => {
   );
   assert.throws(() => compileProposal(p, { ...proposal, clips: [row, row] }, false, ['asset']));
 });
+
+test('高速片段忽略不足一帧的字幕，避免生成零长度文字片段', () => {
+  const { c } = fixture();
+  const t: Transcript = {
+    ...transcript,
+    segments: [{ id: 'tiny', startMs: 0, endMs: 33, text: '短' }],
+  };
+  assert.deepEqual(mappedSentences(t, { ...c, in: 0, speed: 4 }), []);
+});

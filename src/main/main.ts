@@ -1,10 +1,20 @@
+import {
+  routeFor,
+  resolvedSettings,
+  resolveChoice,
+  assertRouteAuthorization,
+} from '../shared/services';
+import { listModels, probeService } from './service-probes';
+import { AITasks, projectHash } from './ai-tasks';
+import { compileProposal, transcriptSchema } from '../shared/studio';
+import { checkpoint } from './history';
 import { callModel } from './providers';
 import { AppState } from './app-state';
 import { app, BrowserWindow, dialog, ipcMain, protocol, Menu, safeStorage, shell } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { mediaResponse } from './media-response';
-import { ProjectStore } from './store';
+import { ProjectStore, safeFile, atomicWrite } from './store';
 import { exportVideo } from './exporter';
 import { errorMessage, type Project } from '../shared/model';
 protocol.registerSchemesAsPrivileged([
@@ -22,6 +32,7 @@ protocol.registerSchemesAsPrivileged([
 let win: BrowserWindow;
 let state: AppState;
 const store = new ProjectStore();
+const ai = new AITasks();
 let dirty = false,
   exporting: AbortController | null = null,
   queue = Promise.resolve(),
@@ -82,9 +93,9 @@ async function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.on('close', (e) => {
-    if (exporting || busy) {
+    if (exporting || busy || ai.job?.status === 'running') {
       e.preventDefault();
-      dialog.showMessageBoxSync(win, { message: '请等待当前操作完成，或先取消导出。' });
+      dialog.showMessageBoxSync(win, { message: '请等待当前操作完成，或先取消导出 / AI 任务。' });
       return;
     }
     if (!confirmDiscard()) e.preventDefault();
@@ -102,21 +113,179 @@ app.whenReady().then(async () => {
     encrypt: (value) => safeStorage.encryptString(value),
     decrypt: (value) => safeStorage.decryptString(value),
   });
-  await state.init();
-  register('studio:test-model', async (role) => {
-    if (!['planner', 'worker', 'vision'].includes(role)) throw new Error('模型角色无效');
-    const choice = state.view().settings[role as 'planner' | 'worker' | 'vision'];
-    const result = await callModel(
-      choice,
-      state.key(choice.provider),
-      {
-        instruction: 'Reply with OK only.',
-        text: 'Connection test.',
-        maxTokens: 256,
-      },
-      AbortSignal.timeout(30000),
+  try {
+    await state.init();
+  } catch (e) {
+    dialog.showErrorBox('设置读取或迁移失败', errorMessage(e));
+    app.quit();
+    return;
+  }
+  let probing: AbortController | null = null;
+  app.on('before-quit', () => probing?.abort());
+  const readIPC = (channel: string, fn: (...args: any[]) => Promise<any>) =>
+    ipcMain.handle(channel, async (event, ...args) => {
+      if (event.senderFrame !== win.webContents.mainFrame) throw new Error('不允许的调用来源');
+      try {
+        return await fn(...args);
+      } catch (e) {
+        throw new Error(errorMessage(e));
+      }
+    });
+  readIPC('service:cancel', async () => {
+    probing?.abort();
+  });
+  const probeTask = async (fn: (signal: AbortSignal) => Promise<any>) => {
+    if (probing) throw new Error('已有连接测试，请先取消或等待完成');
+    const controller = new AbortController();
+    probing = controller;
+    try {
+      return await fn(controller.signal);
+    } finally {
+      probing = null;
+    }
+  };
+  readIPC('service:models', async (id) =>
+    probeTask((signal) => {
+      const s = state.view().settings.services.find((s) => s.id === id);
+      if (!s) throw new Error('服务不存在');
+      return listModels(s, state.key(id), signal);
+    }),
+  );
+  readIPC('service:probe', async (id, model, cap) =>
+    probeTask((signal) => {
+      if (typeof model !== 'string' || model.length > 150 || !['text', 'vision'].includes(cap))
+        throw new Error('测试参数无效');
+      return probeService(state.view().settings, id, model, cap, state.key(id), signal);
+    }),
+  );
+  readIPC('studio:test-model', async (role) =>
+    probeTask(async (signal) => {
+      if (!['planner', 'worker', 'vision'].includes(role)) throw new Error('角色无效');
+      const settings = state.view().settings;
+      const c = resolveChoice(settings, role);
+      const r = await probeService(
+        settings,
+        c.serviceId!,
+        c.model,
+        'text',
+        state.key(c.serviceId!),
+        signal,
+      );
+      return { inputTokens: r.inputTokens || 0, outputTokens: r.outputTokens || 0 };
+    }),
+  );
+  const routing = (request: any) => {
+    if (
+      !request ||
+      !['roughcut', 'transcribe'].includes(request.kind) ||
+      !Array.isArray(request.assetIds) ||
+      request.assetIds.length > 8
+    )
+      throw new Error('任务参数无效');
+    const project = store.validate(request.project);
+    if (request.assetIds.some((id: unknown) => !project.assets.some((a) => a.id === id)))
+      throw new Error('素材不存在');
+    return routeFor(
+      state.view().settings,
+      request.kind,
+      project.assets.some((a) => request.assetIds.includes(a.id) && a.kind !== 'audio'),
     );
-    return { inputTokens: result.inputTokens, outputTokens: result.outputTokens };
+  };
+  register('ai:route', async (request) => routing(request));
+  register('ai:start', async (request) => {
+    const route = routing(request);
+    assertRouteAuthorization(route, request);
+    const project = store.validate(request.project),
+      settings = resolvedSettings(state.view().settings);
+    return ai.start({ ...request, project }, store.root, settings, (id) => state.key(id));
+  });
+  register('ai:status', async () => ai.job);
+  register('ai:cancel', async () => ai.cancel());
+  register('ai:check', async (id, current) => {
+    current = store.validate(current);
+    if (
+      !ai.job ||
+      ai.job.id !== id ||
+      ai.job.status !== 'done' ||
+      projectHash(current) !== ai.job.inputHash
+    )
+      throw new Error('任务或工程已变化，请重新生成，避免时间码错位');
+  });
+  register('ai:transcript', async (id, raw) => {
+    const job = ai.job;
+    if (!job || job.id !== id || job.status !== 'done' || !job.result?.transcript)
+      throw new Error('转写任务不存在');
+    const transcript = transcriptSchema.parse(raw),
+      original = job.result.transcript;
+    if (
+      transcript.assetId !== original.assetId ||
+      transcript.segments.length !== original.segments.length ||
+      transcript.segments.some(
+        (s, i) =>
+          s.id !== original.segments[i].id ||
+          s.startMs !== original.segments[i].startMs ||
+          s.endMs !== original.segments[i].endMs,
+      )
+    )
+      throw new Error('文稿编辑只能修改文字');
+    await safeFile(ai.root, 'cache');
+    await atomicWrite(
+      path.join(ai.root, 'cache', `transcript-${id}.json`),
+      JSON.stringify(transcript),
+    );
+    job.result.transcript = transcript;
+  });
+  register('ai:srt', async (text) => {
+    if (typeof text !== 'string' || text.length > 2000000) throw new Error('字幕内容无效');
+    const d = await dialog.showSaveDialog(win, {
+      title: '导出字幕',
+      filters: [{ name: 'SRT', extensions: ['srt'] }],
+      defaultPath: '字幕.srt',
+    });
+    if (d.canceled || !d.filePath) return false;
+    if (path.extname(d.filePath).toLowerCase() !== '.srt') throw new Error('请选择 .srt 文件名');
+    await atomicWrite(d.filePath, text);
+    return true;
+  });
+  register('ai:apply', async (id, current) => {
+    if (exporting) throw new Error('请等待导出结束');
+    current = store.validate(current);
+    const job = ai.job;
+    if (!job || job.id !== id || job.status !== 'done' || !job.result?.proposal || !ai.source)
+      throw new Error('没有可应用的初剪方案');
+    if (projectHash(current) !== job.inputHash)
+      throw new Error('工程已变化，请重新生成方案，避免覆盖后续编辑');
+    const result = compileProposal(
+      ai.source,
+      job.result.proposal,
+      !!job.result.portrait,
+      job.result.assetIds,
+    );
+    const d = await dialog.showOpenDialog(win, {
+      title: '选择初剪新工程存放位置',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (d.canceled) return null;
+    await checkpoint(store.root, current, 'AI 初剪前的工作副本');
+    const next = new ProjectStore();
+    const empty = await next.create(d.filePaths[0], result.name, result.height > result.width);
+    const project = { ...result, id: empty.id };
+    try {
+      for (const a of project.assets) {
+        const source = await safeFile(ai.root, a.path);
+        await fs.mkdir(path.dirname(path.join(next.root, a.path)), { recursive: true });
+        await fs.copyFile(source, path.join(next.root, a.path), fs.constants.COPYFILE_EXCL);
+      }
+      next.project = project;
+      await next.save(project);
+    } catch (e) {
+      await fs.rm(next.root, { recursive: true, force: true });
+      throw e;
+    }
+    await store.read(next.file, false);
+    dirty = false;
+    await state.register(project, store.file);
+    return { project, missing: [], recovered: false };
   });
   register('studio:dashboard', () => state.dashboard());
   register('studio:settings', async () => state.view());

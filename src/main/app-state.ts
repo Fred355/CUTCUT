@@ -1,15 +1,20 @@
+import {
+  serviceSettingsSchema,
+  defaultServiceSettings,
+  migrateSettings,
+  serviceIdentity,
+  roleNames,
+  roles,
+  type ServiceSettings,
+} from '../shared/services';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { atomicWrite, safeFile } from './store';
 import {
-  settingsSchema,
-  defaultSettings,
-  providers,
   type DashboardData,
   type Provider,
   type RecentProject,
   type SettingsView,
-  type Settings,
 } from '../shared/studio';
 import type { Project } from '../shared/model';
 
@@ -19,21 +24,21 @@ export type SecretStorage = {
   decrypt(value: Buffer): string;
 };
 type State = {
-  version: 1;
-  settings: Settings;
-  keys: Partial<Record<Provider, string>>;
+  version: 2;
+  settings: ServiceSettings;
+  keys: Record<string, string>;
   projects: RecentProject[];
   exports: Record<string, number>;
 };
 export class AppState {
   private state: State = {
-    version: 1,
-    settings: structuredClone(defaultSettings),
+    version: 2,
+    settings: structuredClone(defaultServiceSettings),
     keys: {},
     projects: [],
     exports: {},
   };
-  private memory = new Map<Provider, string>();
+  private memory = new Map<string, string>();
   private writes = Promise.resolve();
   constructor(
     readonly root: string,
@@ -41,23 +46,54 @@ export class AppState {
   ) {}
   async init() {
     await fs.mkdir(this.root, { recursive: true });
+    let loaded = false;
     try {
-      const data = JSON.parse(await fs.readFile(path.join(this.root, 'studio.json'), 'utf8'));
-      if (data.version !== 1 || !Array.isArray(data.projects) || !data.keys || !data.exports)
+      const file = path.join(this.root, 'studio.json');
+      const original = await fs.readFile(file, 'utf8');
+      loaded = true;
+      const data = JSON.parse(original);
+      if (
+        ![1, 2].includes(data.version) ||
+        !Array.isArray(data.projects) ||
+        !data.keys ||
+        !data.exports
+      )
         throw new Error('本地设置格式无效');
-      this.state = { ...data, settings: settingsSchema.parse(data.settings) };
+      if (data.version === 1) {
+        const migrated = migrateSettings(data.settings, data.keys);
+        const next = { ...data, ...migrated, version: 2 };
+        const backup = await fs.open(
+          path.join(this.root, `studio-v1-backup-${Date.now()}.json`),
+          'wx',
+          0o600,
+        );
+        try {
+          await backup.writeFile(original);
+          await backup.sync();
+        } finally {
+          await backup.close();
+        }
+        await atomicWrite(file, JSON.stringify(next, null, 2));
+        this.state = next;
+      } else this.state = { ...data, settings: serviceSettingsSchema.parse(data.settings) };
     } catch (e: any) {
-      if (e.code !== 'ENOENT')
+      if (loaded || e.code !== 'ENOENT')
         throw new Error('无法读取本地设置；请保留 studio.json 后检查文件权限或恢复备份');
     }
   }
-  private persist() {
-    const snapshot = JSON.stringify(this.state, null, 2);
-    const task = this.writes.then(() => atomicWrite(path.join(this.root, 'studio.json'), snapshot));
-    this.writes = task.catch(() => {});
+  private transaction<T>(fn: () => Promise<T>): Promise<T> {
+    const task = this.writes.then(fn);
+    this.writes = task.then(
+      () => {},
+      () => {},
+    );
     return task;
   }
-  key(provider: Provider): string {
+  private async commit(next: State) {
+    await atomicWrite(path.join(this.root, 'studio.json'), JSON.stringify(next, null, 2));
+    this.state = next;
+  }
+  key(provider: string): string {
     if (this.memory.has(provider)) return this.memory.get(provider)!;
     const encrypted = this.state.keys[provider];
     if (!encrypted || !this.secrets.available()) return '';
@@ -71,30 +107,58 @@ export class AppState {
     return {
       settings: structuredClone(this.state.settings),
       secureStorage: this.secrets.available(),
-      keys: Object.fromEntries(providers.map((p) => [p, !!this.key(p)])) as Record<
-        Provider,
-        boolean
-      >,
+      keys: Object.fromEntries(this.state.settings.services.map((s) => [s.id, !!this.key(s.id)])),
     };
   }
-  async update(settings: Settings) {
-    this.state.settings = settingsSchema.parse(settings);
-    await this.persist();
-    return this.view();
+  async update(raw: ServiceSettings) {
+    return this.transaction(async () => {
+      const settings = serviceSettingsSchema.parse(raw),
+        old = this.state.settings;
+      if (settings.revision !== old.revision) throw new Error('设置已变化，请刷新后再保存');
+      for (const service of old.services)
+        if (!settings.services.some((s) => s.id === service.id)) {
+          const used = roles.filter((r) => old.bindings[r].serviceId === service.id);
+          if (used.length)
+            throw new Error(`请先解除绑定：${used.map((r) => roleNames[r]).join('、')}`);
+        }
+      const keys = { ...this.state.keys };
+      const removed: string[] = [];
+      for (const service of old.services) {
+        const next = settings.services.find((s) => s.id === service.id);
+        if (!next || serviceIdentity(next) !== serviceIdentity(service)) {
+          delete keys[service.id];
+          removed.push(service.id);
+        }
+      }
+      const next = { ...this.state, keys, settings: { ...settings, revision: old.revision + 1 } };
+      await this.commit(next);
+      for (const id of removed) this.memory.delete(id);
+      return this.view();
+    });
   }
-  async setKey(provider: Provider, value: string) {
-    if (!providers.includes(provider) || typeof value !== 'string' || value.length > 2000)
-      throw new Error('密钥参数无效');
-    value = value.trim();
-    delete this.state.keys[provider];
-    this.memory.delete(provider);
-    if (value) {
-      if (this.secrets.available())
-        this.state.keys[provider] = this.secrets.encrypt(value).toString('base64');
-      else this.memory.set(provider, value);
-    }
-    await this.persist();
-    return this.view();
+  async setKey(id: string, value: string) {
+    return this.transaction(async () => {
+      if (
+        !this.state.settings.services.some((s) => s.id === id) ||
+        typeof value !== 'string' ||
+        value.length > 2000
+      )
+        throw new Error('服务或密钥参数无效');
+      value = value.trim();
+      const keys = { ...this.state.keys };
+      delete keys[id];
+      if (value && this.secrets.available())
+        keys[id] = this.secrets.encrypt(value).toString('base64');
+      const next = {
+        ...this.state,
+        keys,
+        settings: { ...this.state.settings, revision: this.state.settings.revision + 1 },
+      };
+      await this.commit(next);
+      this.memory.delete(id);
+      if (value && !this.secrets.available()) this.memory.set(id, value);
+      return this.view();
+    });
   }
   async register(p: Project, file: string) {
     const previous = this.state.projects.find((x) => x.id === p.id);
@@ -119,12 +183,14 @@ export class AppState {
       assets: p.assets.map((a) => ({ id: a.id, name: a.name, kind: a.kind })),
       cover,
     };
-    this.state.projects = [entry, ...this.state.projects.filter((x) => x.id !== p.id)].slice(
-      0,
-      500,
+    await this.transaction(() =>
+      this.commit({
+        ...this.state,
+        projects: [entry, ...this.state.projects.filter((x) => x.id !== p.id)].slice(0, 500),
+      }),
     );
-    await this.persist();
   }
+
   project(id: string) {
     const p = this.state.projects.find((p) => p.id === id);
     if (!p) throw new Error('工程未登记');
@@ -135,14 +201,19 @@ export class AppState {
     return safeFile(this.root, `covers/${id}.jpg`);
   }
   async exported(now = new Date()) {
-    const day = localDay(now);
-    this.state.exports[day] = (this.state.exports[day] || 0) + 1;
-    this.state.exports = Object.fromEntries(
-      Object.entries(this.state.exports)
-        .sort(([a], [b]) => b.localeCompare(a))
-        .slice(0, 366),
-    );
-    await this.persist();
+    await this.transaction(async () => {
+      const day = localDay(now),
+        exports = { ...this.state.exports };
+      exports[day] = (exports[day] || 0) + 1;
+      await this.commit({
+        ...this.state,
+        exports: Object.fromEntries(
+          Object.entries(exports)
+            .sort(([a], [b]) => b.localeCompare(a))
+            .slice(0, 366),
+        ),
+      });
+    });
   }
   async dashboard(): Promise<DashboardData> {
     const projects = await Promise.all(

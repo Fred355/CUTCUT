@@ -154,16 +154,20 @@ test('暂停恢复、拆分后的画面和音频持续可用', async ({}, info) 
       )
       .toBeGreaterThan(100);
     await page.locator('.timeline-clip.text').click();
+    await expect(page.locator('.selection-outline')).toHaveAttribute('x', '80');
     const textBox = await page.locator('.selection-outline').boundingBox();
     await page.mouse.move(textBox!.x + textBox!.width / 2, textBox!.y + textBox!.height / 2);
     await page.mouse.down();
     await page.mouse.move(
       textBox!.x + textBox!.width / 2 + 50,
       textBox!.y + textBox!.height / 2 - 40,
+      { steps: 5 },
     );
     await page.mouse.up();
+    await expect
+      .poll(async () => Number(await page.getByLabel('X 位置').inputValue()))
+      .toBeGreaterThan(80);
     const movedX = Number(await page.getByLabel('X 位置').inputValue());
-    expect(movedX).toBeGreaterThan(80);
     await page.getByTitle('撤销').click();
     await expect(page.getByLabel('X 位置')).toHaveValue('80');
     await page.getByTitle('重做').click();
@@ -200,7 +204,9 @@ test('暂停恢复、拆分后的画面和音频持续可用', async ({}, info) 
     await page.mouse.down();
     await page.mouse.move(size!.x + size!.width / 2 + 40, size!.y + size!.height / 2 + 20);
     await page.mouse.up();
-    expect(Number(await page.getByLabel('等比缩放').inputValue())).toBeGreaterThan(0.3);
+    await expect
+      .poll(async () => Number(await page.getByLabel('等比缩放').inputValue()))
+      .toBeGreaterThan(0.3);
     await page.screenshot({ path: info.outputPath('transform-and-drop.png') });
     await page.getByRole('button', { name: /保存/ }).first().click();
     await expect(page.getByRole('status')).toContainText('工程已保存');
@@ -219,7 +225,9 @@ test('暂停恢复、拆分后的画面和音频持续可用', async ({}, info) 
     await page.getByRole('button', { name: '打开工程' }).click();
     await expect(page.getByRole('status')).toContainText('工程已打开');
     await page.locator('.timeline-clip.image').click();
-    expect(Number(await page.getByLabel('等比缩放').inputValue())).toBeGreaterThan(0.3);
+    await expect
+      .poll(async () => Number(await page.getByLabel('等比缩放').inputValue()))
+      .toBeGreaterThan(0.3);
     await page.locator('.timeline-clip.text').click();
     await expect(page.getByLabel('X 位置')).toHaveValue(String(movedX));
     expect(errors).toEqual([]);

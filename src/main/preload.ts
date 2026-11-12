@@ -1,6 +1,17 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { Bridge, ExportEvent } from '../shared/bridge';
 const bridge: Bridge = {
+  aiRoute: (r) => ipcRenderer.invoke('ai:route', r),
+  serviceModels: (id) => ipcRenderer.invoke('service:models', id),
+  serviceProbe: (id, m, c) => ipcRenderer.invoke('service:probe', id, m, c),
+  cancelProbe: () => ipcRenderer.invoke('service:cancel'),
+  aiStart: (request) => ipcRenderer.invoke('ai:start', request),
+  aiStatus: () => ipcRenderer.invoke('ai:status'),
+  aiCancel: () => ipcRenderer.invoke('ai:cancel'),
+  aiCheck: (id, p) => ipcRenderer.invoke('ai:check', id, p),
+  aiApply: (id, p) => ipcRenderer.invoke('ai:apply', id, p),
+  aiTranscript: (id, t) => ipcRenderer.invoke('ai:transcript', id, t),
+  exportSRT: (text) => ipcRenderer.invoke('ai:srt', text),
   versions: () => ipcRenderer.invoke('project:versions'),
   restoreVersion: (id, p) => ipcRenderer.invoke('project:restore-version', id, p),
   testModel: (role) => ipcRenderer.invoke('studio:test-model', role),

@@ -433,3 +433,54 @@ html body {
     font-size: 14px;
   }
 }
+.ai-panel {
+  width: min(960px, 92vw);
+  max-height: 88vh;
+  overflow: auto;
+  margin: 0;
+}
+.ai-panel textarea {
+  width: 100%;
+  padding: 12px;
+}
+.ai-assets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  max-height: 180px;
+  overflow: auto;
+  margin: 16px 0;
+}
+.ai-panel progress {
+  width: 100%;
+  margin-top: 12px;
+}
+.ai-panel li {
+  margin: 8px 0;
+}
+.model-row {
+  flex-wrap: wrap;
+}
+
+.service-form .model-row label {
+  width: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 160px;
+}
+.service-form .model-row input,
+.service-form .model-row select {
+  box-sizing: border-box;
+  width: 100%;
+}
+.service-form > label {
+  display: block;
+}
+.service-form > label input {
+  padding: 10px;
+  margin-top: 8px;
+}
+.settings-card code {
+  overflow-wrap: anywhere;
+}

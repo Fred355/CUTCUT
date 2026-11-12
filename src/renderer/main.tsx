@@ -1,3 +1,4 @@
+import { AIPanel } from './AIPanel';
 import { changeSpeed, dissolve } from '../shared/effects';
 import { Dashboard } from './Dashboard';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -31,6 +32,7 @@ const timecode = (f: number) =>
       '0',
     )}:${Math.floor(f / 30) % 60 < 10 ? '0' : ''}${Math.floor(f / 30) % 60}:${(f % 30).toString().padStart(2, '0')}`;
 function App() {
+  const [aiPanel, setAIPanel] = useState(false);
   const [versions, setVersions] = useState<Awaited<ReturnType<Bridge['versions']>> | null>(null);
   const [home, setHome] = useState(true);
   useEffect(() => {
@@ -46,7 +48,7 @@ function App() {
     [frame, setFrame] = useState(0),
     [playing, setPlaying] = useState(false),
     [dirty, setDirty] = useState(false),
-    [message, setMessage] = useState('所有素材仅在本机处理'),
+    [message, setMessage] = useState('手动剪辑在本机处理 · AI 任务需明确允许上传'),
     [busy, setBusy] = useState(''),
     [missing, setMissing] = useState<string[]>([]),
     [job, setJob] = useState<ExportEvent | null>(null),
@@ -276,7 +278,7 @@ function App() {
   );
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (busy || home) return;
+      if (busy || home || aiPanel || versions) return;
       if (
         e.target instanceof HTMLInputElement ||
         e.target instanceof HTMLTextAreaElement ||
@@ -362,6 +364,19 @@ function App() {
           </section>
         </div>
       )}
+      {aiPanel && project && (
+        <AIPanel
+          project={project}
+          selected={selected}
+          onCommit={commit}
+          onOpen={load}
+          onClose={() => setAIPanel(false)}
+          onSeek={(f) => {
+            setPlaying(false);
+            setFrame(f);
+          }}
+        />
+      )}
       <header>
         <div className="brand">
           <span className="brandmark">✂</span>CUTCUT<span className="badge">DESKTOP EDITOR</span>
@@ -371,6 +386,15 @@ function App() {
           {dirty && <i title="未保存"> •</i>}
         </div>
         <div className="header-actions">
+          <button
+            disabled={!project || !!busy}
+            onClick={() => {
+              setPlaying(false);
+              setAIPanel(true);
+            }}
+          >
+            AI 剪辑
+          </button>
           <button
             disabled={!project || !!busy || exporting}
             onClick={() =>

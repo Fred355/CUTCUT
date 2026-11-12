@@ -1,13 +1,12 @@
+import { ServiceSettings } from './ServiceSettings';
+import { defaultServiceSettings, type ServiceSettings as Config } from '../shared/services';
 import React, { useEffect, useState } from 'react';
 import {
-  defaultSettings,
-  providerNames,
   providers,
   themeNames,
   themes,
   type DashboardData,
   type SettingsView,
-  type Settings,
 } from '../shared/studio';
 export function Dashboard({
   onCreate,
@@ -30,13 +29,11 @@ export function Dashboard({
     storagePath: '',
   });
   const [view, setView] = useState<SettingsView>({
-    settings: defaultSettings,
-    keys: { openai: false, anthropic: false, gemini: false, deepseek: false },
+    settings: defaultServiceSettings,
+    keys: Object.fromEntries(providers.map((p) => [p, false])) as SettingsView['keys'],
     secureStorage: false,
   });
   const [notice, setNotice] = useState('');
-  const [key, setKey] = useState('');
-  const [provider, setProvider] = useState<(typeof providers)[number]>('openai');
   const [filter, setFilter] = useState('');
   useEffect(() => {
     void Promise.all([window.cutcut?.dashboard(), window.cutcut?.settings()])
@@ -46,7 +43,7 @@ export function Dashboard({
       })
       .catch((e) => setNotice(String(e)));
   }, []);
-  const update = async (settings: Settings) => {
+  const update = async (settings: Config) => {
     try {
       const next = await window.cutcut?.updateSettings(settings);
       if (next) {
@@ -121,139 +118,11 @@ export function Dashboard({
                 ))}
               </div>
             </section>
-            <section className="settings-card">
-              <h2>AI 服务</h2>
-              <p>高级模型负责规划，低成本模型整理素材。填写厂商提供的模型 ID。</p>
-              {(['planner', 'worker', 'vision'] as const).map((role, i) => (
-                <div className="model-row" key={role}>
-                  <label>{['高级规划', '低成本执行', '视觉分析'][i]}</label>
-                  <select
-                    aria-label={`${role} 厂商`}
-                    value={view.settings[role].provider}
-                    onChange={(e) =>
-                      void update({
-                        ...view.settings,
-                        [role]: { ...view.settings[role], provider: e.target.value },
-                      })
-                    }
-                  >
-                    {providers
-                      .filter((p) => role !== 'vision' || p !== 'deepseek')
-                      .map((p) => (
-                        <option value={p} key={p}>
-                          {providerNames[p]}
-                        </option>
-                      ))}
-                  </select>
-                  <input
-                    aria-label={`${role} 模型 ID`}
-                    placeholder="模型 ID"
-                    value={view.settings[role].model}
-                    onChange={(e) =>
-                      setView({
-                        ...view,
-                        settings: {
-                          ...view.settings,
-                          [role]: { ...view.settings[role], model: e.target.value },
-                        },
-                      })
-                    }
-                    onBlur={() => void update(view.settings)}
-                  />
-                  <button
-                    onClick={async () => {
-                      setNotice('正在测试连接…');
-                      try {
-                        await window.cutcut?.updateSettings(view.settings);
-                        const usage = await window.cutcut?.testModel(role);
-                        if (usage)
-                          setNotice(
-                            `连接成功：文本请求通过，输入 ${usage.inputTokens} / 输出 ${usage.outputTokens} tokens。此测试不验证图片或音频能力。`,
-                          );
-                      } catch (error) {
-                        setNotice(String(error));
-                      }
-                    }}
-                  >
-                    测试连接
-                  </button>
-                </div>
-              ))}
-              <div className="model-row">
-                <select
-                  aria-label="密钥厂商"
-                  value={provider}
-                  onChange={(e) => {
-                    setProvider(e.target.value as typeof provider);
-                    setKey('');
-                  }}
-                >
-                  {providers.map((p) => (
-                    <option key={p} value={p}>
-                      {providerNames[p]}
-                      {view.keys[p] ? ' · 已配置' : ''}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  type="password"
-                  autoComplete="off"
-                  aria-label="API 密钥"
-                  value={key}
-                  onChange={(e) => setKey(e.target.value)}
-                  placeholder="输入密钥，仅保存在本机"
-                />
-                <button
-                  disabled={!key.trim()}
-                  onClick={() =>
-                    void window.cutcut
-                      ?.setKey(provider, key)
-                      .then((s) => {
-                        setView(s);
-                        setKey('');
-                        setNotice('密钥已保存');
-                      })
-                      .catch((e) => setNotice(String(e)))
-                  }
-                >
-                  保存密钥
-                </button>
-                <button
-                  onClick={() =>
-                    void window.cutcut
-                      ?.setKey(provider, '')
-                      .then(setView)
-                      .catch((e) => setNotice(String(e)))
-                  }
-                >
-                  清除
-                </button>
-              </div>
-              <p>
-                {view.secureStorage
-                  ? '使用系统保护机制加密保存密钥。'
-                  : '此环境无法安全持久保存密钥，仅在本次运行中使用。'}
-              </p>
-            </section>
-            <section className="settings-card">
-              <h2>语音识别偏好</h2>
-              <select
-                aria-label="语音识别方式"
-                value={view.settings.speech}
-                onChange={(e) =>
-                  void update({ ...view.settings, speech: e.target.value as 'local' | 'openai' })
-                }
-              >
-                <option value="local">本地优先 · whisper.cpp</option>
-                <option value="openai">OpenAI · whisper-1</option>
-              </select>
-              <p>本地模型下载和转写任务尚在接入中。</p>
-            </section>
+            <ServiceSettings view={view} onView={setView} />
             <section className="settings-card">
               <h2>生成工具规划</h2>
               <p>
-                制图本地后端：leejet/stable-diffusion.cpp。音乐本地后端：audio.cpp（0xShug0/audio.cpp）。当前优先接入
-                API；本地生成引擎尚未安装或启用。
+                制图本地后端：leejet/stable-diffusion.cpp。音乐本地后端：audio.cpp（0xShug0/audio.cpp）。本轮仅连接外部聊天与视觉模型服务；图像和音乐生成适配器未接入。
               </p>
             </section>
             <section className="settings-card">
@@ -318,7 +187,8 @@ export function Dashboard({
               <section className="settings-card">
                 <h2>AI 剪辑工作区</h2>
                 <p>
-                  初剪、转写和按句切分的任务流程正在接入。当前可以配置模型服务，继续使用完整的手动剪辑。
+                  先创建或打开工程、导入素材，再点击顶部“AI
+                  剪辑”：生成初剪方案、语音转文字、生成字幕或按语句切分。请先配置所需服务和模型。
                 </p>
                 <button onClick={() => setPage('软件设置')}>配置 AI 服务</button>
                 {hasProject && <button onClick={onResume}>进入当前工程</button>}
