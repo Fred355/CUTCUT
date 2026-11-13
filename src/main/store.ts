@@ -95,6 +95,14 @@ export class ProjectStore {
     this.project = p;
     await fs.rm(path.join(this.root, '.cutcut-recovery.json'), { force: true });
   }
+  async close(discardDraft: boolean) {
+    if (discardDraft && this.root)
+      await fs.rm(path.join(this.root, '.cutcut-recovery.json'), { force: true });
+    this.root = '';
+    this.file = '';
+    this.project = null;
+    this.rebuilding.clear();
+  }
   async versions() {
     if (!this.project) throw new Error('请先打开工程');
     return listVersions(this.root, this.project.id);

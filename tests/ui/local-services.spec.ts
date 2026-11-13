@@ -25,6 +25,10 @@ test('本机服务设置、独立能力测试、授权修订校验及纯本地�
   let calls = 0,
     assetId = '',
     requests = 0;
+  let modelListSupported = true,
+    hold = false,
+    held = false,
+    disconnected = false;
   const server = http.createServer(async (req, res) => {
     requests++;
     expect(req.headers.authorization).toBeUndefined();
@@ -32,10 +36,22 @@ test('本机服务设置、独立能力测试、授权修订校验及纯本地�
     for await (const chunk of req) raw += chunk;
     res.setHeader('content-type', 'application/json');
     if (req.url === '/v1/models') {
+      if (!modelListSupported) {
+        res.statusCode = 404;
+        res.end('{}');
+        return;
+      }
       res.end(JSON.stringify({ data: [{ id: 'test' }] }));
       return;
     }
     expect(req.url).toBe('/v1/chat/completions');
+    if (hold) {
+      held = true;
+      res.on('close', () => {
+        disconnected = true;
+      });
+      return;
+    }
     const body = JSON.parse(raw);
     const match = JSON.stringify(body).match(/assetId=([a-zA-Z0-9-]+)/);
     if (match) assetId = match[1];
@@ -90,26 +106,34 @@ test('本机服务设置、独立能力测试、授权修订校验及纯本地�
     );
     const page = await desktop.firstWindow();
     await page.getByRole('button', { name: '⚙ 软件设置', exact: true }).first().click();
-    await page.getByRole('button', { name: '新增 LM Studio', exact: true }).click();
-    await page.getByLabel('服务 Base URL').fill(baseURL);
-    await page.getByRole('button', { name: '保存服务', exact: true }).click();
-    await expect(page.getByText('服务已保存。修改端点或认证会清除旧凭据。')).toBeVisible();
-    await page.getByRole('button', { name: '读取模型列表' }).click();
-    await page.getByLabel('读取到的模型').selectOption('test');
-    await page.getByRole('button', { name: '测试文本', exact: true }).click();
-    await expect(page.getByText(/文本：文本接口已响应.*视觉：未测试/)).toBeVisible();
-    await page.getByRole('button', { name: '测试视觉', exact: true }).click();
-    await expect(page.getByText(/文本：文本接口已响应.*视觉：视觉接口已响应/)).toBeVisible();
-    await page.screenshot({ path: 'test-results/local-service-settings.png', fullPage: true });
-    const id = await page.evaluate(
-      async () => (await window.cutcut!.settings()).settings.services[0].id,
-    );
-    for (const role of ['planner', 'worker', 'vision']) {
-      await page.getByLabel(`${role} 服务`).selectOption(id);
-      await page.getByLabel(`${role} 模型 ID`).fill('test');
+    await page
+      .getByRole('navigation', { name: '设置分类' })
+      .getByRole('button', { name: 'AI 剪辑', exact: true })
+      .click();
+    for (const [role, title] of [
+      ['planner', '剪辑规划'],
+      ['vision', '画面理解'],
+      ['worker', '低成本执行'],
+    ]) {
+      if (role === 'worker') await page.getByText('高级分工与内存管理', { exact: true }).click();
+      const form = page.getByRole('region', { name: title, exact: true });
+      await form.getByLabel(`${role} 平台`).selectOption('local:LM Studio');
+      await form.getByText('高级设置', { exact: true }).click();
+      await form.getByLabel(`${role} Base URL`).fill(baseURL);
+      modelListSupported = role !== 'worker';
+      await form.getByRole('button', { name: '读取模型', exact: true }).click();
+      if (modelListSupported) await form.getByLabel(`${role} 可用模型`).selectOption('test');
+      else {
+        await expect(form.getByRole('status')).toContainText('HTTP 404');
+        await form.getByLabel(`${role} 模型`, { exact: true }).fill('test');
+      }
+      await form.getByRole('button', { name: '保存并测试', exact: true }).click();
+      await expect(form.getByRole('status')).toContainText(
+        role === 'vision' ? '视觉接口已响应' : '文本接口已响应',
+      );
     }
-    await page.getByRole('button', { name: '保存任务绑定' }).click();
-    await expect(page.getByRole('alert')).toContainText('任务绑定已保存');
+    await expect(page.getByRole('heading', { name: 'AI 服务列表' })).toHaveCount(0);
+    await page.screenshot({ path: 'test-results/feature-settings.png', fullPage: true });
     await page.getByRole('button', { name: /工作台/ }).click();
     await page.getByRole('button', { name: '＋ 创建剪辑工程' }).click();
     await page.getByLabel('工程名称').fill('原工程');
@@ -143,6 +167,32 @@ test('本机服务设置、独立能力测试、授权修订校验及纯本地�
       expect(dirs.filter((n) => n.startsWith('原工程-'))).toHaveLength(1);
       expect(dirs.filter((n) => n.startsWith('AI 独立初剪-'))).toHaveLength(1);
     }
+    // Hold an actual loopback HTTP request; closing must abort it before returning home.
+    hold = true;
+    await page.getByRole('button', { name: 'AI 剪辑', exact: true }).click();
+    await panel.getByRole('button', { name: '生成初剪方案' }).click();
+    await panel.getByRole('button', { name: '确认启动任务' }).click();
+    await expect.poll(() => held).toBe(true);
+    await desktop.evaluate(({ dialog, Menu }) => {
+      dialog.showMessageBox = (async () => ({
+        response: 0,
+        checkboxChecked: false,
+      })) as typeof dialog.showMessageBox;
+      Menu.getApplicationMenu()!
+        .items.flatMap((i) => i.submenu?.items || [])
+        .find((i) => i.label === '关闭工程')!
+        .click();
+    });
+    await expect(page.getByRole('heading', { name: '你好，创作者' })).toBeVisible();
+    await expect.poll(() => disconnected).toBe(true);
+    const folder = path.join(
+      tmp,
+      dirs.find((n) => n.startsWith('AI 独立初剪-'))!,
+    );
+    expect(
+      (await fs.readdir(path.join(folder, 'cache'))).filter((n) => n.startsWith('ai-')),
+    ).toHaveLength(0);
+    expect(desktop.windows()).toHaveLength(1);
   } finally {
     await desktop.close();
     server.closeAllConnections();

@@ -1,3 +1,4 @@
+import { nativeOptions } from './native';
 import type { ServiceSettings } from './services';
 import { z } from 'zod';
 import {
@@ -51,6 +52,7 @@ export const modelChoiceSchema = z.object({
   vision: z.boolean(),
   serviceId: z.string().optional(),
   serviceName: z.string().optional(),
+  releaseOllama: z.boolean().optional(),
   mode: z.enum(['local', 'cloud']).optional(),
   auth: z.enum(['none', 'bearer', 'provider']).optional(),
   protocol: z.enum(['openai', 'anthropic', 'gemini']).optional(),
@@ -72,6 +74,7 @@ export const legacySettingsSchema = z.object({
   speech: z.enum(['local', 'openai', 'groq']),
   language: z.enum(['auto', 'zh', 'en']),
   speechService: modelChoiceSchema.optional(),
+  nativeSpeech: nativeOptions.optional(),
 });
 export type Settings = z.infer<typeof legacySettingsSchema>;
 export const defaultSettings: Settings = {
@@ -333,6 +336,8 @@ export type AIJob = {
   projectId: string;
   inputHash: string;
   configurationRevision?: number;
+  startedAt?: number;
+  indeterminate?: boolean;
   kind: AIRequest['kind'];
   status: 'running' | 'done' | 'cancelled' | 'error';
   stage: string;

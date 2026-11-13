@@ -1,7 +1,10 @@
+import { randomUUID } from 'node:crypto';
+import { featureConfigSchema, type FeatureConfig } from '../shared/services';
 import {
   serviceSettingsSchema,
   defaultServiceSettings,
   migrateSettings,
+  migrateV2,
   serviceIdentity,
   roleNames,
   roles,
@@ -24,7 +27,7 @@ export type SecretStorage = {
   decrypt(value: Buffer): string;
 };
 type State = {
-  version: 2;
+  version: 3;
   settings: ServiceSettings;
   keys: Record<string, string>;
   projects: RecentProject[];
@@ -32,7 +35,7 @@ type State = {
 };
 export class AppState {
   private state: State = {
-    version: 2,
+    version: 3,
     settings: structuredClone(defaultServiceSettings),
     keys: {},
     projects: [],
@@ -53,17 +56,20 @@ export class AppState {
       loaded = true;
       const data = JSON.parse(original);
       if (
-        ![1, 2].includes(data.version) ||
+        ![1, 2, 3].includes(data.version) ||
         !Array.isArray(data.projects) ||
         !data.keys ||
         !data.exports
       )
         throw new Error('本地设置格式无效');
-      if (data.version === 1) {
-        const migrated = migrateSettings(data.settings, data.keys);
-        const next = { ...data, ...migrated, version: 2 };
+      if (data.version < 3) {
+        const migrated =
+          data.version === 1
+            ? migrateSettings(data.settings, data.keys)
+            : { settings: migrateV2(data.settings), keys: data.keys };
+        const next = { ...data, ...migrated, version: 3 };
         const backup = await fs.open(
-          path.join(this.root, `studio-v1-backup-${Date.now()}.json`),
+          path.join(this.root, `studio-v${data.version}-backup-${Date.now()}.json`),
           'wx',
           0o600,
         );
@@ -110,7 +116,7 @@ export class AppState {
       keys: Object.fromEntries(this.state.settings.services.map((s) => [s.id, !!this.key(s.id)])),
     };
   }
-  async update(raw: ServiceSettings) {
+  async update(raw: ServiceSettings, credential?: { id: string; value: string }) {
     return this.transaction(async () => {
       const settings = serviceSettingsSchema.parse(raw),
         old = this.state.settings;
@@ -130,11 +136,49 @@ export class AppState {
           removed.push(service.id);
         }
       }
+      if (credential) {
+        if (
+          typeof credential.value !== 'string' ||
+          credential.value.length > 2000 ||
+          !settings.services.some((s) => s.id === credential!.id)
+        )
+          throw new Error('凭据参数无效');
+        credential = { ...credential, value: credential.value.trim() };
+        delete keys[credential.id];
+        if (credential.value && this.secrets.available())
+          keys[credential.id] = this.secrets.encrypt(credential.value).toString('base64');
+      }
       const next = { ...this.state, keys, settings: { ...settings, revision: old.revision + 1 } };
       await this.commit(next);
       for (const id of removed) this.memory.delete(id);
+      if (credential) {
+        this.memory.delete(credential.id);
+        if (credential.value && !this.secrets.available())
+          this.memory.set(credential.id, credential.value);
+      }
       return this.view();
     });
+  }
+  async configure(raw: FeatureConfig) {
+    const r = featureConfigSchema.parse(raw),
+      settings = this.view().settings;
+    if (r.revision !== settings.revision) throw new Error('设置已变化，请刷新后保存');
+    let service = { ...r.service };
+    const old = settings.services.find((s) => s.id === service.id);
+    if (
+      old &&
+      serviceIdentity(old) !== serviceIdentity(service) &&
+      roles.some((role) => role !== r.role && settings.bindings[role].serviceId === service.id)
+    )
+      service.id = randomUUID();
+    settings.services = settings.services.some((s) => s.id === service.id)
+      ? settings.services.map((s) => (s.id === service.id ? service : s))
+      : [...settings.services, service];
+    settings.bindings[r.role] = { serviceId: service.id, model: r.model };
+    return this.update(
+      settings,
+      r.secret === undefined ? undefined : { id: service.id, value: r.secret },
+    );
   }
   async setKey(id: string, value: string) {
     return this.transaction(async () => {

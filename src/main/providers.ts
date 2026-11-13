@@ -1,5 +1,5 @@
 import { normalizeEndpoint } from '../shared/services';
-import { localRequest } from './local-queue';
+import { localRequest, blockLocalQueue } from './local-queue';
 import { type ModelChoice, providerNames } from '../shared/studio';
 
 export type Fetcher = typeof fetch;
@@ -257,6 +257,44 @@ export function callModel(
   signal: AbortSignal,
   fetcher: Fetcher = (u, i) => fetch(u, i),
 ) {
-  const call = () => performModel(choice, key, input, signal, fetcher);
+  const call = async () => {
+    let requested = false;
+    try {
+      return await performModel(choice, key, input, signal, async (u, i) => {
+        requested = true;
+        return fetcher(u, i);
+      });
+    } finally {
+      if (requested && choice.mode === 'local' && choice.releaseOllama) {
+        const release = async () => {
+          const base = normalizeEndpoint(choice.baseURL!, 'local').replace(/\/v1$/, '');
+          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+          if (choice.auth !== 'none') headers.Authorization = `Bearer ${key}`;
+          const response = await fetcher(base + '/api/generate', {
+            method: 'POST',
+            redirect: 'error',
+            headers,
+            body: JSON.stringify({ model: choice.model, prompt: '', keep_alive: 0, stream: false }),
+            signal: AbortSignal.timeout(15000),
+          });
+          if (!response.ok) {
+            await response.body?.cancel();
+            throw new Error('模型释放接口失败');
+          }
+          const data: any = await response.json();
+          if (data.done !== true || data.done_reason !== 'unload')
+            throw new Error('Ollama 未确认模型已释放');
+        };
+        try {
+          await release();
+        } catch {
+          blockLocalQueue(release);
+          throw new Error(
+            `${choice.serviceName || 'Ollama'} 模型释放失败，后续本地任务已暂停，请在 AI 设置重试释放`,
+          );
+        }
+      }
+    }
+  };
   return choice.mode === 'local' ? localRequest(signal, call) : call();
 }

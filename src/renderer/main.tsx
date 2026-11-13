@@ -1,3 +1,4 @@
+import { GenerationPanel } from './GenerationPanel';
 import { AIPanel } from './AIPanel';
 import { changeSpeed, dissolve } from '../shared/effects';
 import { Dashboard } from './Dashboard';
@@ -33,6 +34,7 @@ const timecode = (f: number) =>
     )}:${Math.floor(f / 30) % 60 < 10 ? '0' : ''}${Math.floor(f / 30) % 60}:${(f % 30).toString().padStart(2, '0')}`;
 function App() {
   const [aiPanel, setAIPanel] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [versions, setVersions] = useState<Awaited<ReturnType<Bridge['versions']>> | null>(null);
   const [home, setHome] = useState(true);
   useEffect(() => {
@@ -121,6 +123,30 @@ function App() {
     if (v === revision.current) setDirty(false);
     setMessage('工程已保存');
   };
+  const closeProject = async () => {
+    if (!api || !projectRef.current || busy) return;
+    await work('正在关闭工程…', async () => {
+      if (!(await api.closeProject(projectRef.current!, dirty))) return;
+      revision.current++;
+      projectRef.current = null;
+      setProject(null);
+      setSelected('');
+      setFrame(0);
+      setDirty(false);
+      setMissing([]);
+      setJob(null);
+      undo.current = [];
+      redo.current = [];
+      setAIPanel(false);
+      setGenerating(false);
+      setVersions(null);
+      setHome(true);
+      setMessage('工程已关闭');
+    });
+  };
+  const closeRef = useRef(closeProject);
+  closeRef.current = closeProject;
+  useEffect(() => api?.onCloseProject(() => void closeRef.current()), []);
   const history = (back: boolean) => {
     const src = back ? undo.current : redo.current,
       dst = back ? redo.current : undo.current;
@@ -278,7 +304,7 @@ function App() {
   );
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (busy || home || aiPanel || versions) return;
+      if (busy || home || aiPanel || versions || generating) return;
       if (
         e.target instanceof HTMLInputElement ||
         e.target instanceof HTMLTextAreaElement ||
@@ -386,6 +412,18 @@ function App() {
           {dirty && <i title="未保存"> •</i>}
         </div>
         <div className="header-actions">
+          <button disabled={!project || !!busy} onClick={() => void closeProject()}>
+            关闭工程
+          </button>
+          <button
+            disabled={!project || !!busy || exporting}
+            onClick={() => {
+              setPlaying(false);
+              setGenerating(true);
+            }}
+          >
+            生成素材
+          </button>
           <button
             disabled={!project || !!busy}
             onClick={() => {
@@ -439,6 +477,16 @@ function App() {
           </button>
         </div>
       </header>
+      {generating && project && api && (
+        <GenerationPanel
+          projectId={project.id}
+          onClose={() => setGenerating(false)}
+          onImport={(a) => {
+            if (projectRef.current?.id === project.id)
+              commit({ ...projectRef.current, assets: [...projectRef.current.assets, a] });
+          }}
+        />
+      )}
       {home || !project ? (
         <Dashboard
           hasProject={!!project}

@@ -7,3 +7,6 @@ test-results/
 *.log
 .DS_Store
 resources/toolchain/
+
+.native-build/
+resources/runtimes/

@@ -1,3 +1,4 @@
+import type { NativeTools } from './native-tools';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -30,7 +31,20 @@ export class AITasks {
   source: Project | null = null;
   root = '';
   private abort?: AbortController;
-  constructor(private fetcher: Fetcher = (input, init) => fetch(input, init)) {}
+  private done: Promise<void> = Promise.resolve();
+  constructor(
+    private fetcher: Fetcher = (input, init) => fetch(input, init),
+    private native?: NativeTools,
+  ) {}
+  async cancelAndWait() {
+    this.cancel();
+    await this.done;
+  }
+  clear() {
+    this.job = null;
+    this.source = null;
+    this.root = '';
+  }
   cancel() {
     this.abort?.abort();
   }
@@ -46,7 +60,9 @@ export class AITasks {
       throw new Error('转写每次选择一个素材');
     const choices =
       input.kind === 'transcribe'
-        ? [settings.speechService]
+        ? settings.speech === 'local'
+          ? []
+          : [settings.speechService]
         : [
             settings.worker,
             settings.planner,
@@ -67,6 +83,7 @@ export class AITasks {
       projectId: this.source.id,
       inputHash: projectHash(this.source),
       configurationRevision: request.routeRevision,
+      startedAt: Date.now(),
       kind: input.kind,
       status: 'running',
       stage: '准备素材',
@@ -87,7 +104,7 @@ export class AITasks {
     const speechKey = key(
       snapshot.speechService?.serviceId || (snapshot.speech === 'groq' ? 'groq' : 'openai'),
     );
-    void this.execute(
+    this.done = this.execute(
       { ...input, project: this.source },
       root,
       snapshot,
@@ -137,7 +154,7 @@ export class AITasks {
           throw new Error(
             `请先在软件设置中配置 ${role === 'vision' ? '视觉分析' : role === 'worker' ? '低成本执行' : '高级规划'} 的模型和密钥`,
           );
-        if (choice.provider === 'cloudflare') cloudflareURL(choice.accountId);
+        if (choice.provider === 'cloudflare' && !choice.mode) cloudflareURL(choice.accountId);
         if (choice.provider === 'compatible' && choice.mode !== 'local')
           compatibleURL(choice.baseURL);
         if (role === 'vision' && (!choice.vision || choice.provider === 'deepseek'))
@@ -296,8 +313,36 @@ export class AITasks {
     signal: AbortSignal,
     work: string,
   ) {
-    if (settings.speech === 'local')
-      throw new Error('本地语音适配器未接入；云端识别可绑定 Groq 或 OpenAI');
+    if (settings.speech === 'local') {
+      job.indeterminate = true;
+      if (!this.native || !settings.nativeSpeech) throw new Error('本地识别运行时未提供');
+      const a = req.project.assets.find((a) => a.id === req.assetIds[0])!;
+      if (!a.hasAudio) throw new Error('该素材没有音轨');
+      const segments = await this.native.transcribe(
+        await safeFile(root, a.path),
+        a.durationFrames / 30,
+        settings.language,
+        settings.nativeSpeech,
+        signal,
+        work,
+        (s) => {
+          job.stage = s;
+        },
+      );
+      const transcript = transcriptSchema.parse({
+        version: 1,
+        assetId: a.id,
+        fingerprint: projectHash(req.project),
+        engine: 'local',
+        language: settings.language,
+        segments,
+      });
+      await atomicWrite(path.join(work, 'transcript.json'), JSON.stringify(transcript));
+      await fs.rm(path.join(work, 'local-speech.wav'), { force: true });
+      job.result = { assetIds: req.assetIds, transcript };
+      job.usage!.push({ kind: 'local', input: null, output: null });
+      return;
+    }
     if (!key) throw new Error('请配置对应语音服务密钥');
     const a = req.project.assets.find((a) => a.id === req.assetIds[0])!;
     if (!a.hasAudio) throw new Error('该素材没有音轨');

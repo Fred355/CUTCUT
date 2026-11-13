@@ -1,3 +1,6 @@
+import { NativeModels } from './native-models';
+import { NativeTools } from './native-tools';
+import { localBusy, localBlocked, retryLocalRelease } from './local-queue';
 import {
   routeFor,
   resolvedSettings,
@@ -32,7 +35,10 @@ protocol.registerSchemesAsPrivileged([
 let win: BrowserWindow;
 let state: AppState;
 const store = new ProjectStore();
-const ai = new AITasks();
+let ai: AITasks;
+let native: NativeTools;
+let models: NativeModels;
+let exportDone: Promise<void> = Promise.resolve();
 let dirty = false,
   exporting: AbortController | null = null,
   queue = Promise.resolve(),
@@ -93,7 +99,7 @@ async function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.on('close', (e) => {
-    if (exporting || busy || ai.job?.status === 'running') {
+    if (exporting || busy || ai?.job?.status === 'running' || native?.job?.status === 'running') {
       e.preventDefault();
       dialog.showMessageBoxSync(win, { message: '请等待当前操作完成，或先取消导出 / AI 任务。' });
       return;
@@ -120,6 +126,19 @@ app.whenReady().then(async () => {
     app.quit();
     return;
   }
+  const resourceRoot = path.join(
+    app.isPackaged ? process.resourcesPath : app.getAppPath(),
+    'resources',
+  );
+  let locks = [];
+  try {
+    locks = JSON.parse(
+      await fs.readFile(path.join(resourceRoot, 'native', 'models.lock.json'), 'utf8'),
+    );
+  } catch {}
+  models = new NativeModels(path.join(state.root, 'models'), undefined, undefined, locks);
+  native = new NativeTools(path.join(state.root, 'generated'), resourceRoot, models);
+  ai = new AITasks(undefined, native);
   let probing: AbortController | null = null;
   app.on('before-quit', () => probing?.abort());
   const readIPC = (channel: string, fn: (...args: any[]) => Promise<any>) =>
@@ -135,6 +154,7 @@ app.whenReady().then(async () => {
     probing?.abort();
   });
   const probeTask = async (fn: (signal: AbortSignal) => Promise<any>) => {
+    if (exporting) throw new Error('请等待导出结束再测试模型');
     if (probing) throw new Error('已有连接测试，请先取消或等待完成');
     const controller = new AbortController();
     probing = controller;
@@ -174,6 +194,121 @@ app.whenReady().then(async () => {
       return { inputTokens: r.inputTokens || 0, outputTokens: r.outputTokens || 0 };
     }),
   );
+  readIPC('feature:configure', async (raw, test) => {
+    if (typeof test !== 'boolean') throw new Error('测试参数无效');
+    const view = await state.configure(raw);
+    if (!test) return { view, ok: true, message: '配置已保存' };
+    try {
+      const choice = resolveChoice(view.settings, raw.role);
+      if (raw.role === 'speech') {
+        await probeTask((sig) =>
+          listModels(
+            view.settings.services.find((s) => s.id === choice.serviceId)!,
+            state.key(choice.serviceId!),
+            sig,
+          ),
+        );
+        return { view, ok: true, message: '认证与模型列表接口已响应；语音识别请用素材单独验证' };
+      }
+      const result = await probeTask((sig) =>
+        probeService(
+          view.settings,
+          choice.serviceId!,
+          choice.model,
+          raw.role === 'vision' ? 'vision' : 'text',
+          state.key(choice.serviceId!),
+          sig,
+        ),
+      );
+      return { view, ok: true, message: result.message };
+    } catch (e) {
+      return { view, ok: false, message: '配置已保存，测试失败：' + errorMessage(e) };
+    }
+  });
+  readIPC('native:status', async () => ({
+    engines: await native.status(state.view().settings),
+    blocked: localBlocked(),
+    modelsPath: models.root,
+  }));
+  readIPC('model:info', (id) => models.lock(id));
+  readIPC('model:download', async (id) => {
+    models.start(id);
+  });
+  register('model:import', async (id) => {
+    models.spec(id);
+    const d = await dialog.showOpenDialog(win, {
+      title: '选择对应的完整模型文件',
+      properties: ['openFile'],
+    });
+    if (d.canceled) return false;
+    models.start(id, d.filePaths[0]);
+    return true;
+  });
+  readIPC('model:cancel', (id) => models.cancel(id));
+  readIPC('model:delete', (id) => models.remove(id));
+  readIPC('native:storage', async () => ({
+    modelsPath: models.root,
+    modelsBytes: (await native.status(state.view().settings)).reduce(
+      (n, e) => n + e.model.bytes,
+      0,
+    ),
+    cachePath: native.root,
+    cacheBytes: await native.cacheBytes(),
+  }));
+  register('native:clear-cache', async () => native.clearCache());
+  readIPC('native:retry-release', async () => retryLocalRelease());
+  register('generation:start', async (request) => {
+    if (exporting || ai.job?.status === 'running') throw new Error('请等待导出或 AI 任务完成');
+    if (!store.project || request.projectId !== store.project.id) throw new Error('工程已变化');
+    return native.start(request, state.view().settings);
+  });
+  readIPC('generation:status', async () => native.job);
+  readIPC('generation:cancel', async () => native.cancel());
+  register('generation:import', async (id, projectId) => {
+    if (store.project?.id !== projectId) throw new Error('工程已变化，不能加入其他工程');
+    const file = native.result(id, projectId);
+    if (native.job?.imported) throw new Error('该结果已经加入素材库');
+    const asset = await store.importOne(file);
+    native.job!.imported = true;
+    dirty = true;
+    return asset;
+  });
+  register('project:close', async (current, rendererDirty) => {
+    current = store.validate(current);
+    if (typeof rendererDirty !== 'boolean') throw new Error('关闭参数无效');
+    if (exporting || ai.job?.status === 'running' || native.job?.status === 'running') {
+      const answer = await dialog.showMessageBox(win, {
+        message: '当前工程仍有任务运行',
+        buttons: ['取消任务并关闭', '返回工程'],
+        defaultId: 1,
+        cancelId: 1,
+      });
+      if (answer.response !== 0) return false;
+      exporting?.abort();
+      ai.cancel();
+      await native.cancel();
+      await ai.cancelAndWait();
+      await exportDone;
+    }
+    if (dirty || rendererDirty) {
+      const answer = await dialog.showMessageBox(win, {
+        message: '保存工程修改后关闭？',
+        buttons: ['保存并关闭', '不保存关闭', '取消'],
+        defaultId: 0,
+        cancelId: 2,
+      });
+      if (answer.response === 2) return false;
+      if (answer.response === 0) {
+        await store.save(current);
+        await state.register(current, store.file);
+      }
+    }
+    await native.clear();
+    await store.close(true);
+    ai.clear();
+    dirty = false;
+    return true;
+  });
   const routing = (request: any) => {
     if (
       !request ||
@@ -193,6 +328,7 @@ app.whenReady().then(async () => {
   };
   register('ai:route', async (request) => routing(request));
   register('ai:start', async (request) => {
+    if (exporting || native.job?.status === 'running') throw new Error('请等待导出或素材生成完成');
     const route = routing(request);
     assertRouteAuthorization(route, request);
     const project = store.validate(request.project),
@@ -248,7 +384,8 @@ app.whenReady().then(async () => {
     return true;
   });
   register('ai:apply', async (id, current) => {
-    if (exporting) throw new Error('请等待导出结束');
+    if (exporting || ai.job?.status === 'running' || native.job?.status === 'running')
+      throw new Error('请等待当前任务完成或先取消');
     current = store.validate(current);
     const job = ai.job;
     if (!job || job.id !== id || job.status !== 'done' || !job.result?.proposal || !ai.source)
@@ -298,6 +435,20 @@ app.whenReady().then(async () => {
     Menu.buildFromTemplate([
       { label: 'CUTCUT', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] },
       {
+        label: '文件',
+        submenu: [
+          {
+            label: '关闭工程',
+            accelerator: 'CmdOrCtrl+W',
+            click: () => {
+              if (busy) return;
+              if (store.project) win.webContents.send('project:request-close');
+              else win.close();
+            },
+          },
+        ],
+      },
+      {
         label: '编辑',
         submenu: [{ role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }],
       },
@@ -309,6 +460,13 @@ app.whenReady().then(async () => {
       const u = new URL(request.url);
       if (u.host === 'cover')
         return mediaResponse(await state.cover(decodeURIComponent(u.pathname.slice(1))), request);
+      if (u.host === 'generated') {
+        if (!store.project) throw new Error('工程已关闭');
+        return mediaResponse(
+          native.result(decodeURIComponent(u.pathname.slice(1)), store.project.id),
+          request,
+        );
+      }
       if (u.host !== 'asset') throw new Error('无效媒体地址');
       const file = await store.media(
         decodeURIComponent(u.pathname.slice(1)),
@@ -320,7 +478,8 @@ app.whenReady().then(async () => {
     }
   });
   register('project:create', async (name: string, portrait: boolean) => {
-    if (exporting) throw new Error('请等待导出结束');
+    if (exporting || ai.job?.status === 'running' || native.job?.status === 'running')
+      throw new Error('请等待当前任务完成或先取消');
     if (!confirmDiscard()) return null;
     if (typeof name !== 'string' || typeof portrait !== 'boolean') throw new Error('工程参数无效');
     const d = await dialog.showOpenDialog(win, {
@@ -334,7 +493,8 @@ app.whenReady().then(async () => {
     return { project: p, missing: [], recovered: false };
   });
   register('project:open', async (recentId?: string) => {
-    if (exporting) throw new Error('请等待导出结束');
+    if (exporting || ai.job?.status === 'running' || native.job?.status === 'running')
+      throw new Error('请等待当前任务完成或先取消');
     if (!confirmDiscard()) return null;
     const recent = recentId ? state.project(recentId) : null;
     const exists = recent && (await fs.stat(recent.file).catch(() => null));
@@ -369,7 +529,8 @@ app.whenReady().then(async () => {
   });
   register('project:versions', async () => store.versions());
   register('project:restore-version', async (id, current) => {
-    if (exporting) throw new Error('请等待导出结束');
+    if (exporting || ai.job?.status === 'running' || native.job?.status === 'running')
+      throw new Error('请等待当前任务完成或先取消');
     const opened = await store.restoreVersion(id, current);
     dirty = false;
     await state.register(opened.project, store.file);
@@ -425,6 +586,13 @@ app.whenReady().then(async () => {
     return d.canceled ? null : store.relink(id, d.filePaths[0]);
   });
   register('export:start', async (p: Project) => {
+    if (
+      localBusy() ||
+      localBlocked() ||
+      ai.job?.status === 'running' ||
+      native.job?.status === 'running'
+    )
+      throw new Error('请等待本地 AI 任务完成，并处理模型释放错误后再导出');
     if (exporting) throw new Error('已有导出任务');
     p = store.validate(p);
     if ((await store.missing(p)).length) throw new Error('请先重新定位缺失素材');
@@ -466,9 +634,16 @@ app.whenReady().then(async () => {
       )
         return false;
     }
+    if (
+      localBusy() ||
+      localBlocked() ||
+      String(ai.job?.status) === 'running' ||
+      String(native.job?.status) === 'running'
+    )
+      throw new Error('本地任务状态已变化，请等待任务完成后再导出');
     const abort = new AbortController();
     exporting = abort;
-    void exportVideo(p, store.root, target, font(), abort.signal, (event) => {
+    exportDone = exportVideo(p, store.root, target, font(), abort.signal, (event) => {
       if (event.status === 'done') void state.exported().catch(() => {});
       if (!win.isDestroyed()) win.webContents.send('export:progress', event);
     })
@@ -489,7 +664,7 @@ app.whenReady().then(async () => {
     exporting?.abort();
   });
   ipcMain.on('project:dirty', (event, value) => {
-    if (event.senderFrame === win.webContents.mainFrame) dirty = !!value;
+    if (event.senderFrame === win.webContents.mainFrame) dirty = !!value && !!store.project;
   });
   await createWindow();
   app.on('activate', () => {

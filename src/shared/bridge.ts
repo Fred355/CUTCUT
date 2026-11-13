@@ -1,3 +1,5 @@
+import type { FeatureConfig } from './services';
+import type { GenerationRequest, GenerationJob, EngineState, ModelLock } from './native';
 import type { ServiceSettings, RoutePreview } from './services';
 import type { AIRequest, AIJob, Transcript } from './studio';
 import type { DashboardData, SettingsView, Settings, Provider } from './studio';
@@ -9,6 +11,32 @@ export type ExportEvent = {
   message?: string;
 };
 export interface Bridge {
+  closeProject(project: Project, dirty: boolean): Promise<boolean>;
+  onCloseProject(fn: () => void): () => void;
+  configureFeature(
+    config: FeatureConfig,
+    test: boolean,
+  ): Promise<{ view: SettingsView; message: string; ok: boolean }>;
+  nativeStatus(): Promise<{ engines: EngineState[]; blocked: boolean; modelsPath: string }>;
+  modelInfo(id: string): Promise<ModelLock>;
+  downloadModel(id: string): Promise<void>;
+  importModel(id: string): Promise<boolean>;
+  cancelModel(id: string): Promise<void>;
+  deleteModel(id: string): Promise<void>;
+  retryLocalRelease(): Promise<void>;
+  nativeStorage(): Promise<{
+    modelsPath: string;
+    modelsBytes: number;
+    cachePath: string;
+    cacheBytes: number;
+  }>;
+  clearGenerationCache(): Promise<void>;
+  generate(request: GenerationRequest): Promise<GenerationJob>;
+  generationStatus(): Promise<GenerationJob | null>;
+  cancelGeneration(): Promise<void>;
+  importGeneration(id: string, projectId: string): Promise<Project['assets'][number]>;
+  generationURL(id: string): string;
+
   aiRoute(request: Pick<AIRequest, 'kind' | 'project' | 'assetIds'>): Promise<RoutePreview>;
   serviceModels(id: string): Promise<string[]>;
   serviceProbe(

@@ -16,7 +16,10 @@
     "start": "electron .",
     "package:mac": "npm run build && node scripts/package.mjs",
     "tools:check": "tsx scripts/check-tools.ts",
-    "format": "prettier --write src tests scripts *.ts *.json index.html"
+    "format": "prettier --write src tests scripts *.ts *.json index.html",
+    "runtimes:build": "node scripts/build-native.mjs",
+    "models:lock": "tsx scripts/lock-models.ts",
+    "runtimes:check": "tsx scripts/check-native.ts"
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "2.1.2",
@@ -68,7 +71,10 @@
         "dmg",
         "zip"
       ],
-      "hardenedRuntime": true
+      "hardenedRuntime": true,
+      "signIgnore": [
+        "resources/runtimes/"
+      ]
     }
   }
 }

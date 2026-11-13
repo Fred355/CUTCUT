@@ -229,7 +229,7 @@ test('v1 备份与迁移：主题、项目、统计、不同地域服务和所�
     const written = JSON.parse(await fs.readFile(path.join(root, 'studio.json'), 'utf8'));
     assert.deepEqual(written.projects, old.projects);
     assert.deepEqual(written.exports, old.exports);
-    assert.equal(written.version, 2);
+    assert.equal(written.version, 3);
     const reopened = new AppState(root, crypto);
     await reopened.init();
     assert.deepEqual(reopened.view(), view);
@@ -360,7 +360,7 @@ test('迁移写入中断：原文件和原始备份不变，后续可重新迁�
     assert.equal(await fs.readFile(path.join(root, backup), 'utf8'), raw);
     fs.rename = rename;
     await new AppState(root, crypto).init();
-    assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).version, 2);
+    assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).version, 3);
   } finally {
     fs.rename = rename;
     await fs.rm(root, { recursive: true, force: true });

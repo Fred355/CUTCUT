@@ -1,3 +1,5 @@
+import { NativeStorage } from './NativeStorage';
+import { NativeSettings } from './NativeSettings';
 import { ServiceSettings } from './ServiceSettings';
 import { defaultServiceSettings, type ServiceSettings as Config } from '../shared/services';
 import React, { useEffect, useState } from 'react';
@@ -22,6 +24,7 @@ export function Dashboard({
   hasProject: boolean;
 }) {
   const [page, setPage] = useState('工作台');
+  const [settingsPage, setSettingsPage] = useState('外观');
   const [data, setData] = useState<DashboardData>({
     projects: [],
     exportsToday: 0,
@@ -92,44 +95,97 @@ export function Dashboard({
                 <p>让工作空间适合你的创作习惯</p>
               </div>
             </div>
-            <section className="settings-card">
-              <h2>外观</h2>
-              <p>四种配色，立即应用到整个工作空间。</p>
-              <div className="theme-grid">
-                {themes.map((t) => (
-                  <button
-                    key={t}
-                    className={`theme-choice ${view.settings.theme === t ? 'chosen' : ''}`}
-                    onClick={() => void update({ ...view.settings, theme: t })}
-                  >
-                    <span
-                      style={{
-                        background: {
-                          blue: '#356aff',
-                          lime: '#c4f36c',
-                          purple: '#a078ed',
-                          light: '#edf0f8',
-                        }[t],
-                      }}
-                    />
-                    {themeNames[t]}
-                    {view.settings.theme === t ? ' ✓' : ''}
-                  </button>
-                ))}
-              </div>
-            </section>
-            <ServiceSettings view={view} onView={setView} />
-            <section className="settings-card">
-              <h2>生成工具规划</h2>
-              <p>
-                制图本地后端：leejet/stable-diffusion.cpp。音乐本地后端：audio.cpp（0xShug0/audio.cpp）。本轮仅连接外部聊天与视觉模型服务；图像和音乐生成适配器未接入。
-              </p>
-            </section>
-            <section className="settings-card">
-              <h2>本地存储</h2>
-              <p>项目素材保存在各自工程文件夹内，设置和最近项目记录保存在：</p>
-              <code>{data.storagePath}</code>
-            </section>
+            <nav className="settings-tabs" aria-label="设置分类">
+              {['外观', 'AI 剪辑', '语音识别', '图像生成', '音乐生成', '本地存储'].map((name) => (
+                <button
+                  key={name}
+                  className={settingsPage === name ? 'active' : ''}
+                  onClick={() => setSettingsPage(name)}
+                >
+                  {name}
+                </button>
+              ))}
+            </nav>
+            {settingsPage === '外观' && (
+              <section className="settings-card">
+                <h2>外观</h2>
+                <div className="theme-grid">
+                  {themes.map((t) => (
+                    <button
+                      key={t}
+                      className={`theme-choice ${view.settings.theme === t ? 'chosen' : ''}`}
+                      onClick={() => void update({ ...view.settings, theme: t })}
+                    >
+                      {themeNames[t]}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
+            {settingsPage === 'AI 剪辑' && <ServiceSettings view={view} onView={setView} />}
+            {settingsPage === '语音识别' && (
+              <>
+                <section className="settings-card">
+                  <h2>语音识别来源</h2>
+                  <div className="model-row">
+                    <button
+                      onClick={() =>
+                        void update({
+                          ...view.settings,
+                          bindings: {
+                            ...view.settings.bindings,
+                            speech: { serviceId: null, model: '' },
+                          },
+                        })
+                      }
+                    >
+                      使用内置 Whisper
+                    </button>
+                    <span>
+                      当前：{view.settings.bindings.speech.serviceId ? '云端服务' : '内置 Whisper'}
+                    </span>
+                    <label>
+                      识别语言
+                      <select
+                        value={view.settings.language}
+                        onChange={(e) =>
+                          void update({
+                            ...view.settings,
+                            language: e.target.value as Config['language'],
+                          })
+                        }
+                      >
+                        <option value="auto">自动</option>
+                        <option value="zh">中文</option>
+                        <option value="en">英语</option>
+                      </select>
+                    </label>
+                  </div>
+                </section>
+                <NativeSettings engine="whisper" view={view} onView={setView} />
+                <details className="settings-card">
+                  <summary>改用 OpenAI / Groq 云端识别</summary>
+                  <ServiceSettings view={view} onView={setView} section="speech" />
+                </details>
+              </>
+            )}
+            {settingsPage === '图像生成' && (
+              <NativeSettings engine="sd" view={view} onView={setView} />
+            )}
+            {settingsPage === '音乐生成' && (
+              <NativeSettings engine="audio" view={view} onView={setView} />
+            )}
+            {settingsPage === '本地存储' && (
+              <section className="settings-card">
+                <h2>本地存储</h2>
+                <p>工程素材保存在各自工程文件夹。应用设置、模型和生成缓存位于：</p>
+                <code>{data.storagePath}</code>
+                <NativeStorage />
+                <p>
+                  模型：models/；未加入工程的生成结果：generated/。模型占用与删除入口位于对应功能页。
+                </p>
+              </section>
+            )}
           </>
         ) : (
           <>

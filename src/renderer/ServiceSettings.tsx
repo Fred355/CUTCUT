@@ -1,388 +1,379 @@
 import { useEffect, useState } from 'react';
 import { providers, providerNames, type SettingsView } from '../shared/studio';
-import {
-  cloudService,
-  roles,
-  roleNames,
-  serviceIdentity,
-  type Service,
-  type ServiceSettings as Config,
-} from '../shared/services';
+import { cloudService, roleNames, type Service, type Role } from '../shared/services';
+function preset(name: string, port: number): Service {
+  return {
+    id: crypto.randomUUID(),
+    name,
+    kind: 'local',
+    provider: 'compatible',
+    protocol: 'openai',
+    baseURL: `http://127.0.0.1:${port}/v1`,
+    auth: 'none',
+    timeoutSeconds: 300,
+    runtime: name === 'Ollama' ? 'ollama' : 'generic',
+  };
+}
 export function ServiceSettings({
   view,
   onView,
+  section = 'ai',
 }: {
+  view: SettingsView;
+  onView: (v: SettingsView) => void;
+  section?: 'ai' | 'speech';
+}) {
+  const config = view.settings;
+  if (section === 'speech') return <FeatureForm role="speech" view={view} onView={onView} />;
+  return (
+    <>
+      <FeatureForm role="planner" view={view} onView={onView} />
+      <FeatureForm role="vision" view={view} onView={onView} />
+      <section className="settings-card">
+        <p>
+          视觉候选：Qwen3-VL 4B-Instruct（4-bit）；内存较紧可选 2B。8B 仅建议单独测试。请选择 Ollama
+          实际提供的模型标签，文字测试不代表视觉可用。
+        </p>
+      </section>
+      <details className="settings-card">
+        <summary>高级分工与内存管理</summary>
+        <p>低成本执行可选择你已安装的 Bonsai 27B。它负责文字整理，不会自动用于图片分析。</p>
+        <FeatureForm role="worker" view={view} onView={onView} />
+        <label>
+          <input
+            type="checkbox"
+            checked={config.releaseOllama}
+            onChange={async (e) => {
+              try {
+                onView(
+                  await window.cutcut!.updateSettings({
+                    ...config,
+                    releaseOllama: e.target.checked,
+                  }),
+                );
+              } catch (err) {
+                alert(String(err));
+              }
+            }}
+          />
+          任务结束后释放本次使用的 Ollama 模型（不删除文件，不关闭 Ollama）
+        </label>
+        <p>同一模型被其他应用使用时，释放会使它们在下次请求时重新加载。内置本地任务串行执行。</p>
+        <button
+          onClick={async () => {
+            try {
+              await window.cutcut!.retryLocalRelease();
+              alert('已完成释放检查');
+            } catch (e) {
+              alert('释放失败：' + String(e));
+            }
+          }}
+        >
+          重试释放 Ollama 模型
+        </button>
+      </details>
+    </>
+  );
+}
+function FeatureForm({
+  role,
+  view,
+  onView,
+}: {
+  role: Role;
   view: SettingsView;
   onView: (v: SettingsView) => void;
 }) {
   const api = window.cutcut!,
-    config = view.settings;
-  const [draft, setDraft] = useState<Service | null>(null),
+    config = view.settings,
+    binding = config.bindings[role];
+  const current = config.services.find((s) => s.id === binding.serviceId);
+  const [draft, setDraft] = useState<Service>(() =>
+    current
+      ? { ...current }
+      : role === 'speech'
+        ? cloudService('openai', crypto.randomUUID())
+        : preset('Ollama', 11434),
+  );
+  const [model, setModel] = useState(binding.model),
     [secret, setSecret] = useState(''),
-    [model, setModel] = useState(''),
     [ids, setIds] = useState<string[]>([]),
-    [notice, setNotice] = useState(''),
     [busy, setBusy] = useState(false),
-    [tests, setTests] = useState<Record<string, string>>({});
-  const [bindings, setBindings] = useState(config.bindings);
-  useEffect(() => setBindings(config.bindings), [config.bindings]);
+    [message, setMessage] = useState('');
+  useEffect(() => {
+    if (current) setDraft({ ...current });
+    setModel(binding.model);
+  }, [current, binding.model]);
+  const save = async (test: boolean) => {
+    const result = await api.configureFeature(
+      { revision: config.revision, role, service: draft, model, secret: secret || undefined },
+      test,
+    );
+    onView(result.view);
+    setSecret('');
+    setMessage(result.message);
+    return result.view;
+  };
   const perform = async (fn: () => Promise<void>) => {
     setBusy(true);
     try {
       await fn();
     } catch (e) {
-      setNotice(String(e));
+      setMessage(String(e));
     } finally {
       setBusy(false);
     }
   };
-  const save = async (next: Config) => {
-    const v = await api.updateSettings(next);
-    onView(v);
-    setBindings(v.settings.bindings);
-    return v;
-  };
-  const saveService = async () => {
-    if (!draft) throw new Error('请选择服务');
-    const services = config.services.some((s) => s.id === draft.id)
-      ? config.services.map((s) => (s.id === draft.id ? draft : s))
-      : [...config.services, draft];
-    return save({ ...config, services });
-  };
-  const edit = (s: Service) => {
-    setDraft({ ...s });
-    setSecret('');
-    setIds([]);
-    setModel(Object.values(config.bindings).find((b) => b.serviceId === s.id)?.model || '');
-    setNotice('');
-  };
-  const local = (name: string, port: number) =>
-    edit({
-      id: crypto.randomUUID(),
-      name,
-      kind: 'local',
-      provider: 'compatible',
-      protocol: 'openai',
-      baseURL: `http://127.0.0.1:${port}/v1`,
-      auth: 'none',
-      timeoutSeconds: 300,
-    });
-  const testKey = (cap: string) => {
-    try {
-      return draft ? `${draft.id}|${serviceIdentity(draft)}|${model}|${cap}` : '';
-    } catch {
-      return '';
-    }
-  };
+  const choices = config.services.filter(
+    (s) => s.kind === draft.kind && (role !== 'speech' || ['openai', 'groq'].includes(s.provider)),
+  );
+  const title = {
+    planner: '剪辑规划',
+    vision: '画面理解',
+    worker: '低成本执行',
+    speech: '云端语音识别',
+  }[role];
   return (
-    <>
-      <section className="settings-card">
-        <h2>AI 服务列表</h2>
-        <p>本地服务由你在外部启动；预设只填写地址，不安装或加载模型。每个服务独立保存凭据。</p>
-        <div className="model-row">
-          <button onClick={() => local('LM Studio', 1234)}>新增 LM Studio</button>
-          <button onClick={() => local('Ollama', 11434)}>新增 Ollama</button>
-          <button onClick={() => local('llama-server', 8080)}>新增 llama-server</button>
+    <section className="settings-card feature-form" aria-label={title}>
+      <h2>{title}</h2>
+      <div className="model-row">
+        {role !== 'speech' && (
+          <label>
+            运行位置
+            <select
+              aria-label={`${role} 运行位置`}
+              value={draft.kind}
+              disabled={busy}
+              onChange={(e) => {
+                setDraft(
+                  e.target.value === 'local'
+                    ? preset('Ollama', 11434)
+                    : cloudService('openai', crypto.randomUUID()),
+                );
+                setModel('');
+                setIds([]);
+                setSecret('');
+                setMessage('');
+              }}
+            >
+              <option value="local">本地</option>
+              <option value="cloud">云端</option>
+            </select>
+          </label>
+        )}
+        <label>
+          平台 / 账户
           <select
-            aria-label="新增云端服务"
-            value=""
-            onChange={(e) =>
-              edit(cloudService(e.target.value as Service['provider'], crypto.randomUUID()))
+            aria-label={`${role} 平台`}
+            disabled={busy}
+            value={
+              choices.some((s) => s.id === draft.id)
+                ? draft.id
+                : draft.kind === 'local'
+                  ? ['Ollama', 'LM Studio', 'llama-server'].includes(draft.name)
+                    ? `local:${draft.name}`
+                    : 'local:custom'
+                  : `new:${draft.provider}`
             }
+            onChange={(e) => {
+              const existing = config.services.find((s) => s.id === e.target.value);
+              const value = e.target.value;
+              setDraft(
+                existing
+                  ? { ...existing }
+                  : value === 'local:Ollama'
+                    ? preset('Ollama', 11434)
+                    : value === 'local:LM Studio'
+                      ? preset('LM Studio', 1234)
+                      : value === 'local:llama-server'
+                        ? preset('llama-server', 8080)
+                        : cloudService(value.slice(4) as Service['provider'], crypto.randomUUID()),
+              );
+              setModel(
+                role === 'speech'
+                  ? value.endsWith('groq')
+                    ? 'whisper-large-v3'
+                    : 'whisper-1'
+                  : '',
+              );
+              setIds([]);
+              setSecret('');
+              setMessage('');
+            }}
           >
-            <option value="">新增云端服务…</option>
-            {providers.map((p) => (
-              <option key={p} value={p}>
-                {providerNames[p]}
+            {draft.kind === 'local' &&
+              !choices.some((s) => s.id === draft.id) &&
+              !['Ollama', 'LM Studio', 'llama-server'].includes(draft.name) && (
+                <option value="local:custom">{draft.name}</option>
+              )}
+            {choices.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}（已配置）
               </option>
             ))}
-          </select>
-        </div>
-        {config.services.map((s) => (
-          <div className="model-row" key={s.id}>
-            <button onClick={() => edit(s)}>
-              {s.name} · {s.kind === 'local' ? '本机' : '云端'}
-            </button>
-            <code>{s.baseURL}</code>
-            <span>
-              {view.keys[s.id] ? '已配置凭据' : s.auth === 'none' ? '无认证' : '未配置凭据'}
-            </span>
-            <button
-              disabled={busy}
-              onClick={() =>
-                void perform(async () => {
-                  await save({ ...config, services: config.services.filter((v) => v.id !== s.id) });
-                  if (draft?.id === s.id) setDraft(null);
-                })
-              }
-            >
-              删除 {s.name}
-            </button>
-          </div>
-        ))}
-        {!config.services.length && <p>尚无服务。添加本机预设，或配置云端服务。</p>}
-        {draft && (
-          <div className="service-form">
-            <h3>编辑服务</h3>
-            <div className="model-row">
-              <label>
-                名称{' '}
-                <input
-                  aria-label="服务名称"
-                  value={draft.name}
-                  onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                />
-              </label>
-              <span>
-                {draft.kind === 'local'
-                  ? '本机 · OpenAI 兼容'
-                  : '云端 · ' + providerNames[draft.provider]}
-              </span>
-            </div>
-            <label>
-              Base URL{' '}
-              <input
-                style={{ width: '100%' }}
-                aria-label="服务 Base URL"
-                value={draft.baseURL}
-                onChange={(e) => setDraft({ ...draft, baseURL: e.target.value })}
-              />
-            </label>
-            <p>
-              {draft.provider === 'cloudflare'
-                ? '请将地址中的 ACCOUNT_ID 替换成自己的账户 ID。'
-                : draft.provider === 'bailian'
-                  ? '国际（新加坡）地址：https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
-                  : '填写基础路径（例如 /v1），不要填写 /chat/completions。'}
-            </p>
-            <div className="model-row">
-              <label>
-                协议{' '}
-                <select
-                  aria-label="服务协议"
-                  disabled={draft.kind === 'local'}
-                  value={draft.protocol}
-                  onChange={(e) =>
-                    setDraft({ ...draft, protocol: e.target.value as Service['protocol'] })
-                  }
-                >
-                  <option value="openai">OpenAI 兼容</option>
-                  <option value="anthropic">Anthropic 原生</option>
-                  <option value="gemini">Gemini 原生</option>
-                </select>
-              </label>
-              <label>
-                认证{' '}
-                <select
-                  aria-label="服务认证"
-                  value={draft.auth}
-                  onChange={(e) => setDraft({ ...draft, auth: e.target.value as Service['auth'] })}
-                >
-                  {draft.kind === 'local' ? (
-                    <>
-                      <option value="none">无认证</option>
-                      <option value="bearer">Bearer Token</option>
-                    </>
-                  ) : (
-                    <option value="provider">厂商认证</option>
-                  )}
-                </select>
-              </label>
-              <label>
-                超时（秒）{' '}
-                <input
-                  aria-label="服务超时秒数"
-                  type="number"
-                  min={5}
-                  max={1800}
-                  value={draft.timeoutSeconds}
-                  onChange={(e) => setDraft({ ...draft, timeoutSeconds: +e.target.value })}
-                />
-              </label>
-              <button
-                disabled={busy}
-                onClick={() =>
-                  void perform(async () => {
-                    await saveService();
-                    setNotice('服务已保存。修改端点或认证会清除旧凭据。');
-                  })
-                }
-              >
-                保存服务
-              </button>
-            </div>
-            {draft.auth !== 'none' && (
-              <div className="model-row">
-                <input
-                  aria-label="服务密钥"
-                  type="password"
-                  autoComplete="off"
-                  value={secret}
-                  onChange={(e) => setSecret(e.target.value)}
-                  placeholder="先保存服务，再保存密钥"
-                />
-                <button
-                  disabled={busy || !secret || !config.services.some((s) => s.id === draft.id)}
-                  onClick={() =>
-                    void perform(async () => {
-                      await saveService();
-                      onView(await api.setKey(draft.id, secret));
-                      setSecret('');
-                      setNotice('凭据已保存');
-                    })
-                  }
-                >
-                  保存服务密钥
-                </button>
-                <button
-                  disabled={busy}
-                  onClick={() => void perform(async () => onView(await api.setKey(draft.id, '')))}
-                >
-                  清除服务密钥
-                </button>
-              </div>
-            )}
-            <h3>连接与能力测试</h3>
-            <p>
-              测试使用固定文字或内置测试图片；文本成功不代表视觉可用，列表也不代表模型能力。测试会发送请求。
-            </p>
-            <div className="model-row">
-              <input
-                aria-label="测试模型 ID"
-                placeholder="手动输入模型 ID"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-              />
-              <button
-                disabled={busy}
-                onClick={() =>
-                  void perform(async () => {
-                    await saveService();
-                    setIds(await api.serviceModels(draft.id));
-                    setNotice('模型列表已读取；能力需单独测试。');
-                  })
-                }
-              >
-                读取模型列表
-              </button>
-              {ids.length > 0 && (
-                <select
-                  aria-label="读取到的模型"
-                  value=""
-                  onChange={(e) => setModel(e.target.value)}
-                >
-                  <option value="">选择模型…</option>
-                  {ids.map((id) => (
-                    <option key={id}>{id}</option>
-                  ))}
-                </select>
-              )}
-              {(['text', 'vision'] as const).map((cap) => (
-                <button
-                  key={cap}
-                  disabled={busy || !model.trim()}
-                  onClick={() =>
-                    void perform(async () => {
-                      await saveService();
-                      try {
-                        const r = await api.serviceProbe(draft.id, model, cap);
-                        setTests((prev) => ({ ...prev, [testKey(cap)]: r.message }));
-                        setNotice(r.message);
-                      } catch (e) {
-                        setTests((prev) => ({ ...prev, [testKey(cap)]: String(e) }));
-                        throw e;
-                      }
-                    })
-                  }
-                >
-                  {cap === 'text' ? '测试文本' : '测试视觉'}
-                </button>
-              ))}
-              {busy && <button onClick={() => void api.cancelProbe()}>取消测试</button>}
-            </div>
-            <p>
-              文本：{tests[testKey('text')] || '未测试'}　视觉：
-              {tests[testKey('vision')] || '未测试'}
-            </p>
-          </div>
-        )}
-        <p>
-          {view.secureStorage
-            ? '凭据由系统保护机制加密保存。'
-            : '当前环境不能安全持久保存凭据，仅在本次运行中使用。'}
-        </p>
-        {notice && <p role="alert">{notice}</p>}
-      </section>
-      <section className="settings-card">
-        <h2>任务绑定</h2>
-        <p>逐任务选择服务，失败不会自动切换。本机推理请求串行执行，不管理外部服务进程。</p>
-        {roles.map((role) => (
-          <div className="model-row" key={role}>
-            <label>{roleNames[role]}</label>
-            <select
-              aria-label={`${role} 服务`}
-              value={bindings[role].serviceId || ''}
-              onChange={(e) =>
-                setBindings({
-                  ...bindings,
-                  [role]: { ...bindings[role], serviceId: e.target.value || null },
-                })
-              }
-            >
-              <option value="">
-                {role === 'speech' ? '未绑定（本地适配器未接入）' : '未绑定'}
-              </option>
-              {config.services
-                .filter(
-                  (s) =>
-                    role !== 'speech' ||
-                    (s.kind === 'cloud' && ['openai', 'groq'].includes(s.provider)),
-                )
-                .map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name} · {s.kind === 'local' ? '本机' : '云端'}
+            {draft.kind === 'local'
+              ? ['Ollama', 'LM Studio', 'llama-server'].map((n) => (
+                  <option key={n} value={`local:${n}`}>
+                    {n}
                   </option>
-                ))}
-            </select>
-            <input
-              aria-label={`${role} 模型 ID`}
-              value={bindings[role].model}
-              placeholder={role === 'speech' ? 'whisper-1 或 whisper-large-v3' : '模型 ID'}
-              onChange={(e) =>
-                setBindings({ ...bindings, [role]: { ...bindings[role], model: e.target.value } })
-              }
-            />
-          </div>
-        ))}
-        <label>
-          识别语言{' '}
-          <select
-            aria-label="识别语言"
-            value={config.language}
-            onChange={(e) =>
-              void perform(async () => {
-                await save({ ...config, language: e.target.value as Config['language'] });
-              })
-            }
-          >
-            <option value="auto">自动</option>
-            <option value="zh">中文</option>
-            <option value="en">英语</option>
+                ))
+              : providers
+                  .filter((p) => role !== 'speech' || p === 'openai' || p === 'groq')
+                  .map((p) => (
+                    <option key={p} value={`new:${p}`}>
+                      {providerNames[p]} · 新账户
+                    </option>
+                  ))}
           </select>
+        </label>
+        {draft.auth !== 'none' && (
+          <label>
+            API 密钥
+            <input
+              aria-label={`${role} API 密钥`}
+              type="password"
+              autoComplete="off"
+              disabled={busy}
+              value={secret}
+              onChange={(e) => setSecret(e.target.value)}
+              placeholder={view.keys[draft.id] ? '已保存，留空沿用' : '填写此账户的密钥'}
+            />
+          </label>
+        )}
+      </div>
+      <div className="model-row">
+        <label>
+          模型
+          <input
+            aria-label={`${role} 模型`}
+            value={model}
+            disabled={busy}
+            placeholder={
+              role === 'speech' ? 'whisper-1 / whisper-large-v3' : '选择或填写实际模型 ID'
+            }
+            onChange={(e) => {
+              setModel(e.target.value);
+              setMessage('');
+            }}
+          />
         </label>
         <button
           disabled={busy}
           onClick={() =>
             void perform(async () => {
-              await save({ ...config, bindings });
-              setNotice('任务绑定已保存');
+              const v = await save(false),
+                id = v.settings.bindings[role].serviceId!;
+              setIds(await api.serviceModels(id));
+              setMessage('模型列表已读取；请选择模型再保存并测试。');
             })
           }
         >
-          保存任务绑定
+          读取模型
         </button>
-        <p>本地语音识别、图像生成（sd.cpp）、音乐生成（audio.cpp）：适配器未接入，不能启动。</p>
-      </section>
-    </>
+        {ids.length > 0 && (
+          <select
+            aria-label={`${role} 可用模型`}
+            value=""
+            onChange={(e) => {
+              setModel(e.target.value);
+              setMessage('');
+            }}
+          >
+            <option value="">选择已安装/可用模型</option>
+            {ids.map((id) => (
+              <option key={id}>{id}</option>
+            ))}
+          </select>
+        )}
+      </div>
+      <details>
+        <summary>高级设置</summary>
+        <div className="model-row">
+          <label>
+            账户名称
+            <input
+              aria-label={`${role} 账户名称`}
+              value={draft.name}
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+            />
+          </label>
+          <label>
+            Base URL
+            <input
+              aria-label={`${role} Base URL`}
+              value={draft.baseURL}
+              onChange={(e) => {
+                setDraft({ ...draft, baseURL: e.target.value });
+                setMessage('');
+                setSecret('');
+              }}
+            />
+          </label>
+          <label>
+            超时（秒）
+            <input
+              type="number"
+              min={5}
+              max={1800}
+              value={draft.timeoutSeconds}
+              onChange={(e) => setDraft({ ...draft, timeoutSeconds: +e.target.value })}
+            />
+          </label>
+          {draft.kind === 'local' && (
+            <label>
+              本地服务类型
+              <select
+                aria-label={`${role} 本地服务类型`}
+                value={draft.runtime || 'generic'}
+                onChange={(e) =>
+                  setDraft({ ...draft, runtime: e.target.value as 'ollama' | 'generic' })
+                }
+              >
+                <option value="generic">通用兼容服务</option>
+                <option value="ollama">Ollama（支持指定模型释放）</option>
+              </select>
+            </label>
+          )}
+          {draft.kind === 'local' && (
+            <label>
+              认证
+              <select
+                value={draft.auth}
+                onChange={(e) => setDraft({ ...draft, auth: e.target.value as Service['auth'] })}
+              >
+                <option value="none">无认证</option>
+                <option value="bearer">Bearer Token</option>
+              </select>
+            </label>
+          )}
+        </div>
+        <p>
+          地址或认证改变后需要重新填写密钥；共享连接修改端点会为此功能建立独立连接。云端协议按平台自动选择。
+        </p>
+      </details>
+      <div className="model-row">
+        <button
+          className="primary"
+          disabled={busy || !model.trim()}
+          onClick={() =>
+            void perform(async () => {
+              await save(true);
+            })
+          }
+        >
+          {busy ? '正在处理…' : '保存并测试'}
+        </button>
+        {busy && <button onClick={() => void api.cancelProbe()}>取消测试</button>}
+      </div>
+      <p>
+        {role === 'vision'
+          ? '测试仅发送内置蓝色图片，不发送工程素材。'
+          : role === 'speech'
+            ? '此处检查认证和模型列表；带时间码的识别请在工程中测试。'
+            : '测试仅发送固定短文本，不发送工程素材。'}
+        云端测试可能计费；本地默认地址无需密钥。
+      </p>
+      {message && <p role="status">{message}</p>}
+    </section>
   );
 }

@@ -1,3 +1,4 @@
+import { nativeOptions, nativeDefaults, modelCatalog, engineIds } from './native';
 import { z } from 'zod';
 import {
   providers,
@@ -83,6 +84,7 @@ export const serviceSchema = z
     baseURL: z.string().max(500),
     auth: z.enum(['none', 'bearer', 'provider']),
     timeoutSeconds: z.number().int().min(5).max(1800),
+    runtime: z.enum(['ollama', 'generic']).optional(),
   })
   .superRefine((s, ctx) => {
     try {
@@ -108,7 +110,9 @@ export type Service = z.infer<typeof serviceSchema>;
 const binding = z.object({ serviceId: z.string().nullable(), model: z.string().trim().max(150) });
 export const serviceSettingsSchema = z
   .object({
-    version: z.literal(2),
+    version: z.literal(3),
+    native: z.object({ whisper: nativeOptions, sd: nativeOptions, audio: nativeOptions }),
+    releaseOllama: z.boolean(),
     revision: z.number().int().nonnegative(),
     theme: z.enum(['blue', 'lime', 'purple', 'light']),
     services: z.array(serviceSchema).max(100),
@@ -123,13 +127,21 @@ export const serviceSettingsSchema = z
       if (b.serviceId && !s.services.some((v) => v.id === b.serviceId))
         ctx.addIssue({ code: 'custom', message: `${roleNames[role]} 引用了不存在的服务` });
     }
+    for (const engine of engineIds)
+      if (!modelCatalog.some((m) => m.id === s.native[engine].modelId && m.engine === engine))
+        ctx.addIssue({ code: 'custom', message: '内置模型与功能不匹配' });
     const speech = s.services.find((v) => v.id === s.bindings.speech.serviceId);
     if (speech && (speech.kind !== 'cloud' || !['openai', 'groq'].includes(speech.provider)))
-      ctx.addIssue({ code: 'custom', message: '语音适配器仅支持云端 OpenAI/Groq；本地识别未接入' });
+      ctx.addIssue({
+        code: 'custom',
+        message: '云端语音仅支持 OpenAI/Groq；内置 Whisper 请在语音识别页选择',
+      });
   });
 export type ServiceSettings = z.infer<typeof serviceSettingsSchema>;
 export const defaultServiceSettings: ServiceSettings = {
-  version: 2,
+  version: 3,
+  native: structuredClone(nativeDefaults),
+  releaseOllama: true,
   revision: 0,
   theme: 'blue',
   services: [],
@@ -209,7 +221,7 @@ export function resolveChoice(settings: ServiceSettings, role: Role): ModelChoic
     s = settings.services.find((s) => s.id === b.serviceId);
   if (!s)
     throw new Error(
-      `${roleNames[role]} 尚未绑定服务${role === 'speech' ? '，本地语音适配器未接入' : ''}`,
+      `${roleNames[role]} 尚未绑定服务${role === 'speech' ? '，请在语音识别页选择内置 Whisper 或云端服务' : ''}`,
     );
   return {
     provider: s.provider,
@@ -222,6 +234,7 @@ export function resolveChoice(settings: ServiceSettings, role: Role): ModelChoic
     timeoutSeconds: s.timeoutSeconds,
     serviceId: s.id,
     serviceName: s.name,
+    releaseOllama: settings.releaseOllama && s.runtime === 'ollama',
   };
 }
 export function resolvedSettings(s: ServiceSettings): LegacySettings {
@@ -238,6 +251,7 @@ export function resolvedSettings(s: ServiceSettings): LegacySettings {
     speech:
       speech?.provider === 'groq' ? 'groq' : speech?.provider === 'openai' ? 'openai' : 'local',
     speechService: speech ? resolveChoice(s, 'speech') : undefined,
+    nativeSpeech: s.native.whisper,
   };
 }
 export type RoutePreview = {
@@ -259,6 +273,23 @@ export function routeFor(
   kind: RoutePreview['kind'],
   hasVisual: boolean,
 ): RoutePreview {
+  if (kind === 'transcribe' && !settings.bindings.speech.serviceId)
+    return {
+      revision: settings.revision,
+      kind,
+      requiresCloudConsent: false,
+      destinations: [
+        {
+          role: 'speech',
+          serviceId: 'builtin-whisper',
+          name: '内置 Whisper',
+          kind: 'local',
+          endpoint: '本机运行时',
+          model: settings.native.whisper.modelId,
+          content: '所选素材音轨，仅在本机处理',
+        },
+      ],
+    };
   const list: Role[] =
     kind === 'transcribe'
       ? ['speech']
@@ -302,3 +333,31 @@ export function assertRouteAuthorization(
   if (route.requiresCloudConsent && request.cloudConsent !== true)
     throw new Error('云端阶段需要明确允许上传');
 }
+
+export function migrateV2(raw: unknown): ServiceSettings {
+  const old = z
+    .object({
+      version: z.literal(2),
+      revision: z.number().int().nonnegative(),
+      theme: z.enum(['blue', 'lime', 'purple', 'light']),
+      services: z.array(serviceSchema),
+      bindings: z.object({ planner: binding, worker: binding, vision: binding, speech: binding }),
+      language: z.enum(['auto', 'zh', 'en']),
+    })
+    .parse(raw);
+  return serviceSettingsSchema.parse({
+    ...old,
+    version: 3,
+    native: structuredClone(nativeDefaults),
+    releaseOllama: true,
+  });
+}
+
+export const featureConfigSchema = z.object({
+  revision: z.number().int().nonnegative(),
+  role: z.enum(roles),
+  service: serviceSchema,
+  model: z.string().trim().max(150),
+  secret: z.string().max(2000).optional(),
+});
+export type FeatureConfig = z.infer<typeof featureConfigSchema>;

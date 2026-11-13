@@ -199,7 +199,14 @@ export function AIPanel({
             <strong>
               {job.stage} · {job.status}
             </strong>
-            <progress value={job.progress} max={1} />
+            {job.indeterminate && job.status === 'running' ? (
+              <p>
+                正在本机识别 · 已用{' '}
+                {Math.floor((Date.now() - (job.startedAt || Date.now())) / 1000)} 秒
+              </p>
+            ) : (
+              <progress value={job.progress} max={1} />
+            )}
             <p>
               模型步骤 {job.calls} · 已报告输入{' '}
               {job.usage?.some((u) => u.input !== null) ? job.inputTokens : '未提供'} / 输出{' '}

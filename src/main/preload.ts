@@ -1,6 +1,28 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { Bridge, ExportEvent } from '../shared/bridge';
 const bridge: Bridge = {
+  closeProject: (p, d) => ipcRenderer.invoke('project:close', p, d),
+  onCloseProject: (fn) => {
+    const listener = () => fn();
+    ipcRenderer.on('project:request-close', listener);
+    return () => ipcRenderer.removeListener('project:request-close', listener);
+  },
+  configureFeature: (c, t) => ipcRenderer.invoke('feature:configure', c, t),
+  nativeStatus: () => ipcRenderer.invoke('native:status'),
+  modelInfo: (id) => ipcRenderer.invoke('model:info', id),
+  downloadModel: (id) => ipcRenderer.invoke('model:download', id),
+  importModel: (id) => ipcRenderer.invoke('model:import', id),
+  cancelModel: (id) => ipcRenderer.invoke('model:cancel', id),
+  deleteModel: (id) => ipcRenderer.invoke('model:delete', id),
+  nativeStorage: () => ipcRenderer.invoke('native:storage'),
+  clearGenerationCache: () => ipcRenderer.invoke('native:clear-cache'),
+  retryLocalRelease: () => ipcRenderer.invoke('native:retry-release'),
+  generate: (r) => ipcRenderer.invoke('generation:start', r),
+  generationStatus: () => ipcRenderer.invoke('generation:status'),
+  cancelGeneration: () => ipcRenderer.invoke('generation:cancel'),
+  importGeneration: (id, p) => ipcRenderer.invoke('generation:import', id, p),
+  generationURL: (id) => `cutcut-media://generated/${encodeURIComponent(id)}`,
+
   aiRoute: (r) => ipcRenderer.invoke('ai:route', r),
   serviceModels: (id) => ipcRenderer.invoke('service:models', id),
   serviceProbe: (id, m, c) => ipcRenderer.invoke('service:probe', id, m, c),
