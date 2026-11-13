@@ -17,7 +17,7 @@ import ffmpeg from 'ffmpeg-static';
 import { exportVideo } from '../src/main/exporter';
 import { createClip, uid } from '../src/shared/model';
 import { probe } from '../src/main/media';
-import { checkNativeBundle } from '../scripts/check-native';
+import { checkNativeBundle, checkNativeInstaller } from '../scripts/check-native';
 const bytes = Buffer.from('controlled-model-fixture');
 const sha = createHash('sha256').update(bytes).digest('hex');
 const locks: ModelLock[] = modelCatalog.map((m) => ({
@@ -140,6 +140,14 @@ test('完整安装包检查拒绝缺失或伪造的模型清单、许可证与�
     await checkNativeBundle(resources, ['cpu']);
     await fs.appendFile(await native.runtime('sd', 'cpu'), 'tamper');
     await assert.rejects(checkNativeBundle(resources, ['cpu']), /校验失败/);
+    await fs.writeFile(path.join(resources, 'native', 'sources.json'), JSON.stringify(sources));
+    await assert.rejects(checkNativeInstaller(resources), /安装器/);
+    await fs.writeFile(
+      path.join(resources, 'native', 'build-native.mjs'),
+      '// controlled installer fixture\n'.repeat(100),
+    );
+    await fs.rm(path.join(resources, 'runtimes'), { recursive: true });
+    await checkNativeInstaller(resources);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -357,6 +365,40 @@ async function fixtures(root: string) {
   }
   return new NativeTools(path.join(root, 'generated'), resources, models);
 }
+test('模型已安装但运行程序缺失：独立诊断与应用内安装提示', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cutcut-runtime-state-'));
+  try {
+    const native = await fixtures(root),
+      settings = structuredClone(defaultServiceSettings);
+    for (const e of ['whisper', 'sd', 'audio'] as const) settings.native[e].backend = 'cpu';
+    const initial = (await native.status(settings)).find((e) => e.id === 'audio')!;
+    assert.equal(initial.available, true);
+    assert.equal(initial.model.installed, true);
+    const manifestFile = path.join(path.dirname(initial.runtimePath), '..', 'manifest.json');
+    const manifest = await fs.readFile(manifestFile, 'utf8');
+    await fs.rm(manifestFile);
+    const missing = (await native.status(settings)).find((e) => e.id === 'audio')!;
+    assert.equal(missing.available, false);
+    assert.equal(missing.model.installed, true);
+    assert.match(missing.runtimeIssue!, /未找到运行程序清单/);
+    assert.match(missing.setupHint, /已下载的模型可保留/);
+    await assert.rejects(native.runtime('audio', 'cpu'), /预期位置.*runtimes.*编译并安装/);
+
+    await fs.writeFile(manifestFile, '{broken');
+    assert.match(
+      (await native.status(settings)).find((e) => e.id === 'audio')!.runtimeIssue!,
+      /清单损坏/,
+    );
+    await fs.writeFile(manifestFile, manifest);
+    await fs.rm(initial.runtimePath);
+    const noExecutable = (await native.status(settings)).find((e) => e.id === 'audio')!;
+    assert.equal(noExecutable.available, false);
+    assert.equal(noExecutable.model.installed, true);
+    assert.match(noExecutable.runtimeIssue!, /文件缺失/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 test('本地 CLI 协议替身：源时间码、真实 PNG/WAV、素材导入、项目隔离和取消', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cutcut-native-'));
   try {

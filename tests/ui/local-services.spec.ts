@@ -194,6 +194,8 @@ test('本机服务设置、独立能力测试、授权修订校验及纯本地�
     ).toHaveLength(0);
     expect(desktop.windows()).toHaveLength(1);
   } finally {
+    // Project-close assertions are complete; home refresh IPC must not block test teardown.
+    await desktop.evaluate(({ app }) => app.exit(0)).catch(() => {});
     await desktop.close();
     server.closeAllConnections();
     await new Promise<void>((r) => server.close(() => r()));

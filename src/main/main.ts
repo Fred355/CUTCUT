@@ -1,3 +1,6 @@
+import { RuntimeBuilder } from './runtime-builder';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { NativeModels } from './native-models';
 import { NativeTools } from './native-tools';
 import { localBusy, localBlocked, retryLocalRelease } from './local-queue';
@@ -38,6 +41,7 @@ const store = new ProjectStore();
 let ai: AITasks;
 let native: NativeTools;
 let models: NativeModels;
+let runtimeBuilder: RuntimeBuilder;
 let exportDone: Promise<void> = Promise.resolve();
 let dirty = false,
   exporting: AbortController | null = null,
@@ -99,9 +103,17 @@ async function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.on('close', (e) => {
-    if (exporting || busy || ai?.job?.status === 'running' || native?.job?.status === 'running') {
+    if (
+      exporting ||
+      busy ||
+      runtimeBuilder?.active ||
+      ai?.job?.status === 'running' ||
+      native?.job?.status === 'running'
+    ) {
       e.preventDefault();
-      dialog.showMessageBoxSync(win, { message: '请等待当前操作完成，或先取消导出 / AI 任务。' });
+      dialog.showMessageBoxSync(win, {
+        message: '请等待当前操作完成，或先取消导出 / AI 任务；运行程序安装可在软件设置中取消。',
+      });
       return;
     }
     if (!confirmDiscard()) e.preventDefault();
@@ -137,7 +149,13 @@ app.whenReady().then(async () => {
     );
   } catch {}
   models = new NativeModels(path.join(state.root, 'models'), undefined, undefined, locks);
-  native = new NativeTools(path.join(state.root, 'generated'), resourceRoot, models);
+  runtimeBuilder = new RuntimeBuilder(path.join(state.root, 'runtime-tools'), resourceRoot);
+  native = new NativeTools(
+    path.join(state.root, 'generated'),
+    resourceRoot,
+    models,
+    runtimeBuilder.installedRoot,
+  );
   ai = new AITasks(undefined, native);
   let probing: AbortController | null = null;
   app.on('before-quit', () => probing?.abort());
@@ -224,6 +242,36 @@ app.whenReady().then(async () => {
     } catch (e) {
       return { view, ok: false, message: '配置已保存，测试失败：' + errorMessage(e) };
     }
+  });
+  const checkedBackend = (b: unknown) => {
+    if (b !== 'cpu' && b !== 'metal') throw new Error('计算后端无效');
+    return b;
+  };
+  readIPC('runtime:prerequisites', async (b) => runtimeBuilder.prerequisites(checkedBackend(b)));
+  register('runtime:build', async (e, b) => {
+    if (exporting || ai.job?.status === 'running' || native.job?.status === 'running')
+      throw new Error('请先等待或取消当前剪辑任务');
+    return runtimeBuilder.start(e, checkedBackend(b));
+  });
+  readIPC('runtime:status', async () => runtimeBuilder.job);
+  readIPC('runtime:cancel', async () => runtimeBuilder.cancel());
+  register('runtime:tool', async (tool) => {
+    if (tool === 'cmake') {
+      await shell.openExternal('https://cmake.org/download/');
+      return '已打开 CMake 官方下载页。Mac 请安装 CMake.app 到“应用程序”，然后返回重新检查。';
+    }
+    if (tool === 'xcode' && process.platform === 'darwin') {
+      try {
+        await promisify(execFile)('/usr/bin/xcode-select', ['--install'], {
+          timeout: 15000,
+          maxBuffer: 32768,
+        });
+        return '请完成 macOS 弹出的编译工具安装，再返回检查。';
+      } catch {
+        throw new Error('系统工具安装未启动；可能已安装或需要先完成系统更新，请检查 macOS 提示。');
+      }
+    }
+    throw new Error('此系统不支持该安装入口');
   });
   readIPC('native:status', async () => ({
     engines: await native.status(state.view().settings),

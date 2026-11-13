@@ -15,3 +15,11 @@ await build({
   format: 'cjs',
   external: ['electron'],
 });
+
+await build({
+  entryPoints: ['scripts/build-native.mjs'],
+  outfile: 'resources/native/build-native.mjs',
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+});

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { Asset } from '../shared/model';
-import type { GenerationJob } from '../shared/native';
+import type { GenerationJob, EngineState } from '../shared/native';
+import { RuntimeNotice } from './RuntimeNotice';
 export function GenerationPanel({
   projectId,
   onImport,
@@ -19,18 +20,30 @@ export function GenerationPanel({
     [message, setMessage] = useState(''),
     [busy, setBusy] = useState(false),
     [now, setNow] = useState(Date.now());
+  const [engines, setEngines] = useState<EngineState[]>([]);
   useEffect(() => {
-    const t = setInterval(() => {
+    let cancelled = false;
+    const refresh = () => {
       setNow(Date.now());
-      void api
-        .generationStatus()
-        .then((j) => {
+      void Promise.all([api.generationStatus(), api.nativeStatus()])
+        .then(([j, s]) => {
+          if (cancelled) return;
+          setEngines(s.engines);
           if (j?.projectId === projectId) setJob(j);
+          else setJob(null);
         })
         .catch((e) => setMessage(String(e)));
-    }, 700);
-    return () => clearInterval(t);
+    };
+    refresh();
+    const t = setInterval(refresh, 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
   }, [projectId]);
+  const engine = engines.find((e) => e.id === (kind === 'image' ? 'sd' : 'audio')) || null;
+  const ready =
+    engine?.available && engine.model.installed && ['ready', 'error'].includes(engine.model.status);
   const active = job?.status === 'running';
   const work = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -57,8 +70,11 @@ export function GenerationPanel({
             音乐
           </button>
         </div>
+        <p>使用本机模型生成；图片及音乐模型建议使用英文描述。</p>
+        <RuntimeNotice state={engine} />
         <p>
-          使用本机模型生成。请先在软件设置下载对应模型；图片及音乐模型建议使用英文描述。
+          模型权重：{engine?.model.installed ? '已安装' : '未就绪，请到对应功能设置下载或完成校验'}
+          。下载权重不会安装运行程序。
         </p>
         <label>
           {kind === 'image' ? '描述画面' : '描述音乐风格'}
@@ -94,7 +110,7 @@ export function GenerationPanel({
             </label>
           )}
           <button
-            disabled={active || busy || !prompt.trim()}
+            disabled={active || busy || !prompt.trim() || !ready}
             onClick={() =>
               void work(async () => {
                 setMessage('');

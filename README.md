@@ -1,6 +1,6 @@
 # CUTCUT · 本地 AI 工具开发版（基于 0.2.0）
 
-> 当前源码已加入关闭工程返回首页、按功能配置 AI、设置 v3 迁移，以及 Whisper / sd.cpp / audio.cpp 本地 CLI 接入与模型管理。三个运行时已在 Linux 编译；真实权重推理、M1 Pro Metal 和完整安装包尚待验收。详见 [本地工具构建与验收](docs/LOCAL-TOOLS.md)。
+> 当前源码已加入关闭工程返回首页、按功能配置 AI、设置 v3 迁移，以及 Whisper / sd.cpp / audio.cpp 本地 CLI 接入与模型管理。新增三个引擎的应用内源码编译安装，已实际跑通 Electron 内安装 Whisper CPU；真实权重推理、M1 Pro Metal 和完整安装包尚待验收。详见 [本地工具构建与验收](docs/LOCAL-TOOLS.md)。
 
 面向 macOS 的本地桌面多轨剪辑软件，采用 **Electron + React + TypeScript + FFmpeg**。支持真实闭环：**导入素材 → 编辑时间线 → 保存与版本恢复 → 导出 MP4**。
 
@@ -26,6 +26,7 @@
 | 生成素材 | sd.cpp 单张 PNG、audio.cpp 10/20/30 秒纯音乐；预览后加入素材库，需完整运行时和校验通过的模型 |
 | 关闭工程 | 顶部/文件菜单关闭，⌘W；保存、放弃、取消与任务清理，返回首页 |
 | 功能设置 | 六个二级分类，保存并测试、独立账户、模型和缓存管理 |
+| Runtime 安装 | 应用内检查工具、编译 Whisper / sd.cpp / audio.cpp、查看日志和取消；失败保留原版本 |
 
 ## 安装、启动与更新
 
@@ -36,6 +37,8 @@ npm ci
 npm run build
 npm start
 ```
+
+如果模型已安装却提示运行程序缺失：进入“软件设置 → 对应功能”，点击“检查编译工具”，准备好系统提示的工具后点击“编译并安装运行程序”。Whisper、sd.cpp、audio.cpp 均可在应用内完成，无需执行终端编译命令，已下载权重保留。详见 [应用内 Runtime 安装](docs/LOCAL-TOOLS.md)。
 
 开发时使用 `npm run dev`。**`npm start` 启动已构建的应用，每次更新源码后必须重新执行 `npm run build`。**
 
@@ -50,7 +53,7 @@ npm start
 
 通过 ZIP 下载的源码请解压到新目录，再执行安装、构建和启动命令。不要删除或覆盖自己的工程素材文件夹。
 
-安装依赖会下载 Electron、FFmpeg/ffprobe 和本平台 Canvas 二进制；字体随仓库提供。安装后，基础剪辑与导出无需联网。上述源码启动命令不自动编译本地 AI 引擎或下载权重，本地工具需另按 [构建说明](docs/LOCAL-TOOLS.md) 准备。浏览器访问 Vite 仅用于界面预览，本地文件、工程保存和真实导出需要 Electron。
+安装依赖会下载 Electron、FFmpeg/ffprobe 和本平台 Canvas 二进制；字体随仓库提供。安装后，基础剪辑与导出无需联网。上述源码启动命令不自动编译本地 AI 引擎或下载权重，本地工具可在软件设置中按 [安装说明](docs/LOCAL-TOOLS.md) 编译安装。浏览器访问 Vite 仅用于界面预览，本地文件、工程保存和真实导出需要 Electron。
 
 ## 使用流程
 
@@ -126,23 +129,21 @@ npm run test:ui
 
 测试结果见 [验证说明](docs/VALIDATION.md)。CLI 协议测试使用受控进程，实际执行 PNG/WAV 探测、素材复制和 MP4 导出；不能据此声称神经模型推理或生成质量已经通过验收。
 
-桌面测试只替换系统文件选择框，实际执行 IPC、导入、预览、编辑和 MP4 导出。Linux CI 需要显示服务，可使用 `xvfb-run -a npm run test:ui`。仅在隔离 CI 沙箱不可用时设置 `CUTCUT_TEST_NO_SANDBOX=1`，正常应用不关闭沙箱。
+基础编辑器桌面测试替换系统文件选择框，实际执行 IPC、导入、预览、编辑和 MP4 导出；AI 与缺失工具场景另使用明确标注的服务或状态替身。可选的 Runtime 桌面测试则执行真实源码编译。Linux CI 需要显示服务，可使用 `xvfb-run -a npm run test:ui`。仅在隔离 CI 沙箱不可用时设置 `CUTCUT_TEST_NO_SANDBOX=1`，正常应用不关闭沙箱。
 
 ## macOS 打包与验收
 
-开发者在目标架构的 Mac 上准备 Xcode 命令行工具、CMake、Git 后执行（安装包用户无需编译工具）：
+开发者在目标架构的 Mac 上执行：
 
 ```bash
 npm ci
 npm run build
 npm run test:ui
-npm run runtimes:build
 npm run models:lock
-npm run runtimes:check
 npm run package:mac
 ```
 
-DMG/ZIP 输出到 `release/`。Apple Silicon 与 Intel 分别在对应机器上安装依赖和打包，脚本拒绝从 Linux 打包 macOS。完整包携带三个 CPU/Metal CLI、依赖与许可证，权重首次使用时下载。打包前检查文件哈希、许可证及完整模型清单。媒体工具、Canvas 原生模块和中文字体随应用携带；构建记录工具版本、SHA-256 和许可证。
+DMG/ZIP 输出到 `release/`。Apple Silicon 与 Intel 分别在对应机器上安装依赖和打包，脚本拒绝从 Linux 打包 macOS。安装包携带固定源码清单和应用内编译安装器，排除开发者预编译引擎；用户首次使用时在应用内编译 Runtime、下载权重。Mac 需要 CMake 与 Xcode 命令行工具，设置页提供检查和图形安装入口。打包前检查安装器和完整模型清单，当前模型清单仍待可访问 Hugging Face 的环境生成。媒体工具、Canvas 原生模块和中文字体随应用携带；构建记录工具版本、SHA-256 和许可证。
 
 当前未配置 Apple Developer 签名或公证。M1 Pro 上的新效果播放、系统密钥存储、权限、安装包仍待验收；Linux 测试不代表 macOS 发布就绪。
 

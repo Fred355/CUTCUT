@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { modelCatalog, type EngineId, type EngineState, type ModelLock } from '../shared/native';
 import type { SettingsView } from '../shared/studio';
+import { RuntimeNotice } from './RuntimeNotice';
+import { RuntimeInstaller } from './RuntimeInstaller';
 export function NativeSettings({
   engine,
   view,
@@ -31,7 +33,7 @@ export function NativeSettings({
     void refresh();
     const t = setInterval(() => void refresh(), 1200);
     return () => clearInterval(t);
-  }, [engine, options.modelId]);
+  }, [engine, options.modelId, options.backend]);
   const action = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setMessage('');
@@ -50,11 +52,15 @@ export function NativeSettings({
       <h2>
         {engine === 'whisper' ? '内置 Whisper' : engine === 'sd' ? '内置 sd.cpp' : '内置 audio.cpp'}
       </h2>
-      <p>
-        {state?.available
-          ? '运行时已提供；实际推理能力需单独验证'
-          : '当前构建未包含所选运行时，请使用完整本地工具安装包。'}
-      </p>
+      <RuntimeNotice
+        state={state?.id === engine && state.backend === options.backend ? state : null}
+      />
+      <p>运行程序和模型权重都就绪后才能使用。下方下载仅安装模型权重。</p>
+      <RuntimeInstaller
+        engine={engine}
+        backend={options.backend}
+        onInstalled={() => void refresh()}
+      />
       <label>
         计算后端{' '}
         <select
@@ -87,10 +93,10 @@ export function NativeSettings({
       <p className="model-license">{spec.licenseURL}</p>
       <p>
         运行时许可证：{engine === 'audio' ? 'Apache-2.0' : 'MIT'}
-        ；随安装包附带许可证全文及依赖声明。
+        ；编译安装时保存许可证全文及依赖声明。
       </p>
       <p>
-        状态：
+        模型权重：
         {state?.model.installed ? '已校验并安装' : downloading ? '处理中' : '未安装或校验无效'} ·
         已安装大小 {((state?.model.bytes || 0) / 1024 / 1024).toFixed(1)} MiB
       </p>

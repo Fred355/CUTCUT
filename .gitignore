@@ -10,3 +10,5 @@ resources/toolchain/
 
 .native-build/
 resources/runtimes/
+
+resources/native/build-native.mjs

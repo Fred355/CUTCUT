@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { installedRuntime } from './runtime-location';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -89,8 +90,13 @@ export class NativeTools {
     readonly root: string,
     readonly resources: string,
     readonly models: NativeModels,
+    private installedRoot?: string,
   ) {}
-  private dir(engine: EngineId, backend: NativeOptions['backend']) {
+  private async dir(engine: EngineId, backend: NativeOptions['backend']) {
+    if (this.installedRoot) {
+      const installed = await installedRuntime(this.installedRoot, engine, backend);
+      if (installed) return installed;
+    }
     return path.join(
       this.resources,
       'runtimes',
@@ -99,42 +105,84 @@ export class NativeTools {
       backend,
     );
   }
-  async runtime(engine: EngineId, backend: NativeOptions['backend']) {
+  private async setup(engine: EngineId, backend: NativeOptions['backend']) {
+    let dir: string;
+    try {
+      dir = await this.dir(engine, backend);
+    } catch {
+      dir = this.installedRoot || this.resources;
+    }
+    return {
+      runtimePath: path.join(dir, 'bin', sources[engine].binary),
+      setupHint:
+        '请到对应功能设置点击“编译并安装运行程序”。应用会检查编译工具并自动完成安装；已下载的模型可保留。',
+    };
+  }
+  private async inspectRuntime(engine: EngineId, backend: NativeOptions['backend']) {
     if (backend === 'metal' && process.platform !== 'darwin')
-      throw new Error('Metal 仅适用于 macOS，请在功能设置中选择 CPU');
-    const dir = this.dir(engine, backend);
+      throw new Error('Metal 仅适用于 macOS，请选择 CPU 并准备对应运行程序');
+    const dir = await this.dir(engine, backend);
     let info: any;
     try {
       info = JSON.parse(await fs.readFile(path.join(dir, 'manifest.json'), 'utf8'));
-    } catch {
-      throw new Error(`${engine} ${backend} 运行时未随当前构建提供，请安装含本地工具的完整版本`);
+    } catch (e: any) {
+      throw new Error(
+        e.code === 'ENOENT'
+          ? '未找到运行程序清单'
+          : e instanceof SyntaxError
+            ? '运行程序清单损坏'
+            : '无法读取运行程序清单，请检查文件权限',
+      );
     }
     if (
       info.commit !== sources[engine].commit ||
       info.backend !== backend ||
       info.platform !== `${process.platform}-${process.arch}` ||
       !Array.isArray(info.files) ||
-      !info.files.some((f: any) => f.path === 'bin/' + sources[engine].binary)
+      !info.files.some((f: any) => f?.path === 'bin/' + sources[engine].binary)
     )
-      throw new Error('运行时清单不匹配');
-    for (const f of info.files) {
-      if (typeof f.path !== 'string' || typeof f.sha256 !== 'string')
-        throw new Error('运行时清单无效');
-      const file = await safeFile(dir, f.path);
-      if ((await hashFile(file)) !== f.sha256) throw new Error('运行时文件校验失败');
+      throw new Error('运行程序清单与当前版本、架构或后端不匹配');
+    let bin: string;
+    try {
+      bin = await safeFile(dir, 'bin/' + sources[engine].binary);
+      await fs.access(bin, fs.constants.X_OK);
+    } catch {
+      throw new Error('运行程序文件缺失或没有执行权限');
     }
-    return safeFile(dir, 'bin/' + sources[engine].binary);
+    return { dir, info, bin };
+  }
+  async runtime(engine: EngineId, backend: NativeOptions['backend']) {
+    const setup = await this.setup(engine, backend);
+    try {
+      const { dir, info, bin } = await this.inspectRuntime(engine, backend);
+      for (const f of info.files) {
+        if (typeof f?.path !== 'string' || typeof f?.sha256 !== 'string')
+          throw new Error('运行时清单无效');
+        const file = await safeFile(dir, f.path);
+        if ((await hashFile(file)) !== f.sha256) throw new Error('运行时文件校验失败');
+      }
+      return bin;
+    } catch (e) {
+      throw new Error(
+        `${engine} ${backend}：${e instanceof Error ? e.message : String(e)}。预期位置：${setup.runtimePath}。${setup.setupHint}`,
+      );
+    }
   }
   async status(settings: ServiceSettings): Promise<EngineState[]> {
     return Promise.all(
       (['whisper', 'sd', 'audio'] as EngineId[]).map(async (id) => {
         const backend = settings.native[id].backend;
-        const available = !!(await fs
-          .stat(path.join(this.dir(id, backend), 'manifest.json'))
-          .catch(() => null));
+        let runtimeIssue: string | undefined;
+        try {
+          await this.inspectRuntime(id, backend);
+        } catch (e) {
+          runtimeIssue = e instanceof Error ? e.message : String(e);
+        }
         return {
           id,
-          available,
+          available: !runtimeIssue,
+          ...(await this.setup(id, backend)),
+          runtimeIssue,
           version: sources[id].commit,
           backend,
           model: await this.models.status(settings.native[id].modelId),

@@ -8,6 +8,11 @@ const bridge: Bridge = {
     return () => ipcRenderer.removeListener('project:request-close', listener);
   },
   configureFeature: (c, t) => ipcRenderer.invoke('feature:configure', c, t),
+  runtimePrerequisites: (b) => ipcRenderer.invoke('runtime:prerequisites', b),
+  startRuntimeBuild: (e, b) => ipcRenderer.invoke('runtime:build', e, b),
+  runtimeBuildStatus: () => ipcRenderer.invoke('runtime:status'),
+  cancelRuntimeBuild: () => ipcRenderer.invoke('runtime:cancel'),
+  installBuildTool: (t) => ipcRenderer.invoke('runtime:tool', t),
   nativeStatus: () => ipcRenderer.invoke('native:status'),
   modelInfo: (id) => ipcRenderer.invoke('model:info', id),
   downloadModel: (id) => ipcRenderer.invoke('model:download', id),

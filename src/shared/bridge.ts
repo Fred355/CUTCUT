@@ -1,5 +1,12 @@
 import type { FeatureConfig } from './services';
-import type { GenerationRequest, GenerationJob, EngineState, ModelLock } from './native';
+import type {
+  GenerationRequest,
+  GenerationJob,
+  EngineState,
+  ModelLock,
+  RuntimeBuildJob,
+  RuntimePrerequisites,
+} from './native';
 import type { ServiceSettings, RoutePreview } from './services';
 import type { AIRequest, AIJob, Transcript } from './studio';
 import type { DashboardData, SettingsView, Settings, Provider } from './studio';
@@ -17,6 +24,14 @@ export interface Bridge {
     config: FeatureConfig,
     test: boolean,
   ): Promise<{ view: SettingsView; message: string; ok: boolean }>;
+  runtimePrerequisites(backend: 'cpu' | 'metal'): Promise<RuntimePrerequisites>;
+  startRuntimeBuild(
+    engine: 'whisper' | 'sd' | 'audio',
+    backend: 'cpu' | 'metal',
+  ): Promise<RuntimeBuildJob>;
+  runtimeBuildStatus(): Promise<RuntimeBuildJob | null>;
+  cancelRuntimeBuild(): Promise<void>;
+  installBuildTool(tool: 'cmake' | 'xcode'): Promise<string>;
   nativeStatus(): Promise<{ engines: EngineState[]; blocked: boolean; modelsPath: string }>;
   modelInfo(id: string): Promise<ModelLock>;
   downloadModel(id: string): Promise<void>;

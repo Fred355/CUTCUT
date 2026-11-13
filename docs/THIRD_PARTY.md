@@ -20,7 +20,7 @@ https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd
 
 ## 本地 AI 工具与模型（2026-11-13）
 
-固定运行时提交见 resources/native/sources.json：whisper.cpp（MIT）、stable-diffusion.cpp（MIT）、audio.cpp（Apache-2.0）。构建脚本复制源码和依赖中 LICENSE/COPYING/NOTICE 文件至每个运行时的 licenses/，随完整安装包分发；运行时哈希清单包含这些许可证。
+固定运行时提交见 resources/native/sources.json：whisper.cpp（MIT）、stable-diffusion.cpp（MIT）、audio.cpp（Apache-2.0）。构建脚本复制源码和依赖中 LICENSE/COPYING/NOTICE 文件至每个运行时的 licenses/，安装到应用用户数据目录；运行时哈希清单包含这些许可证。本版应用分发固定源码清单和编译安装器，三引擎在用户点击安装时从源码构建。
 
 权重独立下载：Whisper small 为 MIT；SD 1.5 为 CreativeML Open RAIL-M；Magenta RealTime 2 包保留 CC-BY-4.0 和上游使用条款。audio.cpp 固定提交的模型文档确认 GGUF 含生成器、SpectroStream、MusicCoCa、词表及配置，参数量不等于包大小。应用分别展示运行时和模型许可，下载前展示准确大小及哈希。
 

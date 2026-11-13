@@ -57,7 +57,11 @@
     "extraResources": [
       {
         "from": "resources",
-        "to": "resources"
+        "to": "resources",
+        "filter": [
+          "**/*",
+          "!runtimes/**"
+        ]
       }
     ],
     "asarUnpack": [

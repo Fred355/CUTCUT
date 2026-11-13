@@ -1,6 +1,21 @@
 import { z } from 'zod';
 export const engineIds = ['whisper', 'sd', 'audio'] as const;
 export type EngineId = (typeof engineIds)[number];
+export type RuntimePrerequisites = {
+  ready: boolean;
+  platform: string;
+  tools: { name: string; available: boolean; detail: string }[];
+};
+export type RuntimeBuildJob = {
+  id: string;
+  engine: EngineId;
+  backend: 'cpu' | 'metal';
+  status: 'queued' | 'running' | 'done' | 'cancelled' | 'error';
+  stage: string;
+  startedAt: number;
+  logs: string[];
+  message?: string;
+};
 export const nativeOptions = z.object({
   backend: z.enum(['metal', 'cpu']),
   modelId: z.string().max(100),
@@ -71,6 +86,9 @@ export type ModelState = {
 export type EngineState = {
   id: EngineId;
   available: boolean;
+  runtimePath: string;
+  runtimeIssue?: string;
+  setupHint: string;
   version: string;
   backend: 'metal' | 'cpu';
   model: ModelState;

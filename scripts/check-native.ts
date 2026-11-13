@@ -4,6 +4,34 @@ import { pathToFileURL } from 'node:url';
 import { NativeTools } from '../src/main/native-tools';
 import { NativeModels, validateBundledLocks } from '../src/main/native-models';
 import { engineIds, type NativeOptions } from '../src/shared/native';
+import sources from '../resources/native/sources.json';
+
+export async function checkNativeInstaller(resources: string) {
+  const manifest = JSON.parse(
+    await fs.readFile(path.join(resources, 'native', 'sources.json'), 'utf8'),
+  );
+  for (const engine of engineIds)
+    if (
+      manifest[engine]?.repo !== sources[engine].repo ||
+      manifest[engine]?.commit !== sources[engine].commit ||
+      manifest[engine]?.binary !== sources[engine].binary
+    )
+      throw new Error('安装器源码清单不匹配');
+  const builder = await fs
+    .stat(path.join(resources, 'native', 'build-native.mjs'))
+    .catch(() => null);
+  if (!builder?.isFile() || builder.size < 1000)
+    throw new Error('缺少应用内编译安装器，请先构建应用');
+  let models: unknown;
+  try {
+    models = JSON.parse(
+      await fs.readFile(path.join(resources, 'native', 'models.lock.json'), 'utf8'),
+    );
+  } catch {
+    throw new Error('缺少有效模型清单，请先执行 npm run models:lock');
+  }
+  validateBundledLocks(models);
+}
 
 export async function checkNativeBundle(
   resources: string,
@@ -39,9 +67,11 @@ export async function checkNativeBundle(
     }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  await checkNativeBundle(
-    path.resolve('resources'),
-    process.argv.includes('--cpu-only') ? ['cpu'] : ['cpu', 'metal'],
-  );
-  console.log('运行时、哈希、许可证和固定模型清单检查通过（不代表模型推理已验收）');
+  if (process.argv.includes('--installer')) await checkNativeInstaller(path.resolve('resources'));
+  else
+    await checkNativeBundle(
+      path.resolve('resources'),
+      process.argv.includes('--cpu-only') ? ['cpu'] : ['cpu', 'metal'],
+    );
+  console.log('所选分发方式的安装资源检查通过（不代表模型推理已验收）');
 }

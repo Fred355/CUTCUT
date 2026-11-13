@@ -6,6 +6,22 @@
 
 **当前没有完成真实神经模型推理或 macOS 安装包验收。** 云环境网络策略拒绝访问 Hugging Face（CONNECT HTTP 403），因此没有下载权重，也没有伪造下载大小和 SHA-256。完整模型锁定清单尚未生成，打包检查会阻止制作缺少清单的完整安装包。运行时编译成功、CLI 协议替身及 FFmpeg 测试均不等于真实模型验收。
 
+## 在应用内补齐 Runtime
+
+模型权重与运行程序是两部分。“模型已安装”只表示权重准备完毕，不能代替 Whisper、sd.cpp 或 audio.cpp 可执行程序。本版使用**应用内从源码编译安装**，不下载预编译支持包，也不要求在终端执行引擎构建命令。
+
+1. 更新并启动应用，进入“软件设置 → 语音识别 / 图像生成 / 音乐生成”。
+2. 选择 Metal（Mac）或 CPU，点击“检查编译工具”。Mac 需要 CMake、Git 和 Xcode 命令行工具。
+3. 缺少 CMake 时点击“下载 CMake”，从官方页面安装 CMake.app 到“应用程序”；CUTCUT 会自动查找，无需配置终端 PATH。缺少系统编译工具时点击“安装系统编译工具”，完成 macOS 安装对话框。返回后再次检查。
+4. 点击“编译并安装运行程序”。应用下载固定版本的上游源码与子模块，执行编译，安装依赖与许可证，并校验输出。需要能访问 GitHub；首次编译可能数分钟，开始前检查至少 4 GiB 空闲空间，实际需求随引擎而变。
+5. 看到“运行程序：已找到”后即可继续使用原有模型，**无需重新下载权重或重启应用**。模型还没有安装时，再下载或导入对应模型。
+
+安装页面显示真实阶段、耗时及最近日志，不伪造百分比；可取消并等待编译进程退出。失败或取消不会替换之前可用的运行程序，也不会删除模型。Metal 构建或推理失败需要用户明确选择 CPU 后重试。
+
+运行程序安装在 Electron 用户数据目录的 `runtime-tools/installed/平台-架构/引擎/后端/versions/`，校验成功后原子切换 `active.json`；保留前一个版本。源码和中间编译文件保存在 `runtime-tools/build-cache/` 供重试复用。源码版和 .app 均使用这套应用内流程，不修改 .app 包内容。
+
+安装与本地推理使用同一队列，并与导出互斥。安装是应用级任务，关闭工程不会中止它；退出应用前需要完成或在设置中取消。不会关闭用户的 Ollama 服务。
+
 ## 运行时与模型清单
 
 运行时源码提交固定在 resources/native/sources.json；构建目录独立保存 CPU 和 Metal 二进制。
@@ -26,32 +42,23 @@
 - https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/blob/main/LICENSE
 - https://github.com/magenta/magenta-realtime
 
-## 开发者准备完整运行时
+## 开发者构建和打包
 
-最终安装包用户无需 Python、Git、CMake 或自行编译。下面的工具仅供源码开发与打包人员使用。
-
-在目标 Mac 架构上准备 Xcode 命令行工具、CMake、Git、Node.js 22.12+，然后执行：
+源码首次启动仍需要 Node.js 22.12+：
 
     npm ci
-    npm run runtimes:build
-    npm run models:lock
-    npm run runtimes:check
     npm run build
     npm start
 
-- macOS 默认构建 CPU 和 Metal；Linux 默认仅 CPU。可使用 --engine whisper/sd/audio、--backend cpu/metal 和 --jobs 2。
-- 可用 CUTCUT_CMAKE 指定 CMake 可执行文件。代码及构建缓存放在 .native-build/，运行时输出到 resources/runtimes/平台-架构/引擎/后端/。
-- 脚本固定上游提交、初始化固定子模块、编译 CLI，复制依赖与许可证，记录文件 SHA-256。macOS 修正动态库相对路径并在记录哈希前签名。
-- 本地开发默认临时签名；正式签名需在运行时构建前设置 CUTCUT_NATIVE_SIGN_IDENTITY，并与应用签名身份匹配。打包跳过再次签名这些文件以免哈希失效。Developer ID、签名与公证仍需 Mac 验收。
-- models:lock 只读取官方元数据，不下载权重；记录三个模型不可变修订、URL、真实字节数和 SHA-256。已有清单不会被覆盖；明确升级时使用 npm run models:lock -- --refresh 并复查差异及许可证。
-- 生成的 resources/native/models.lock.json 应与该版源码一起保存。当前仓库没有假值或空的占位清单。发布构建必须具有完整清单。
-- 下载需要 HTTPS 访问 huggingface.co 及其官方 HF CDN 跳转域名。若环境策略拒绝访问，应在允许该来源的构建环境执行，不跳过校验或改用不明镜像。
+`npm run build` 把安装器脚本生成到 `resources/native/build-native.mjs`，并携带固定的 `sources.json`；这一步不编译三个引擎。应用内安装器用 Electron 的 Node 模式启动脚本，参数由主进程固定，渲染器不能提交任意命令。
 
-打包：
+在可访问 Hugging Face 的构建环境执行 `npm run models:lock`，生成包含不可变修订、真实字节数、SHA-256 和官方 URL 的 `resources/native/models.lock.json`。已有清单默认不覆盖，明确升级时使用 `--refresh` 并复查差异与权重许可。模型权重不打入安装包，首次使用按需下载；禁止用假值或空清单绕过校验。
 
-    npm run package:mac
+在目标架构的 Mac 上执行 `npm run package:mac`。打包检查安装器脚本、固定源码清单及完整模型清单，排除 `resources/runtimes/` 中的开发者预编译产物。应用内安装仍需要用户电脑具备编译工具。当前环境无法生成完整模型清单，因此不能宣称已经交付可发布安装包。Linux 不生成 Mac 安装包。
 
-打包前检查三个引擎的 CPU/Metal 运行时、全部文件哈希、运行时许可证、模型来源和完整锁定清单。缺少任一项即失败，不产出宣称支持全部本地工具的安装包。权重不打入安装包，首次使用时按需下载。Linux 不生成 Mac 安装包。
+开发者仍可用 `npm run runtimes:build -- --engine audio --backend metal` 独立诊断构建；默认输出 `.native-build/` 缓存与 `resources/runtimes/`。这不是用户安装流程。`npm run runtimes:check` 检查这种开发输出；安装器资源检查使用 `npx tsx scripts/check-native.ts --installer`。
+
+构建固定上游提交及子模块、记录文件 SHA-256，并复制运行时许可。Mac 修正动态库相对路径后临时签名，再记录哈希。编译和应用必须匹配架构；M1 Pro 优先原生 arm64。Developer ID、公证和安装后运行仍待 Mac 验收。
 
 ## 应用内使用
 
@@ -64,7 +71,7 @@
 7. 音乐：同面板选择音乐，生成 10/20/30 秒纯音乐。提示词描述风格，不提供歌词演唱或克隆。模型通常更适合英文风格描述。
 8. 先预览或试听，再“加入素材库”。结果只属于生成时的工程；不会自动加入后打开的工程。素材加入时间线仍是独立可撤销操作。
 
-没有可靠百分比时显示实际阶段和耗时。所有本地推理、测试与内置生成共用队列，并与导出互斥；取消仅终止 CUTCUT 启动的子进程。Ollama 的模型释放是单独的原生请求，不关闭 Ollama、不删除权重，也不承诺断开 HTTP 后外部计算立刻停止。
+没有可靠百分比时显示实际阶段和耗时。所有本地编译、推理、测试与内置生成共用队列，并与导出互斥；取消仅终止 CUTCUT 启动的子进程。Ollama 的模型释放是单独的原生请求，不关闭 Ollama、不删除权重，也不承诺断开 HTTP 后外部计算立刻停止。
 
 ## 实机验收清单
 

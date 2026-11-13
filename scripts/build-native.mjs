@@ -1,14 +1,21 @@
-// Developer/CI build only. End users receive these executables inside the application.
+// Shared fixed-source builder for the in-app installer and developer diagnostics.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-const root = process.cwd(),
-  sources = JSON.parse(await fs.readFile('resources/native/sources.json', 'utf8'));
+const root = process.cwd();
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(name);
   return i < 0 ? fallback : process.argv[i + 1];
 };
+const sources = JSON.parse(
+  await fs.readFile(arg('--manifest', path.join(root, 'resources/native/sources.json')), 'utf8'),
+);
+const workRoot = path.resolve(arg('--work-root', path.join(root, '.native-build')));
+const outputRoot = path.resolve(arg('--output-root', path.join(root, 'resources/runtimes')));
+const stage = (message) =>
+  process.stdout.write('CUTCUT_BUILD_STAGE ' + JSON.stringify({ message }) + '\n');
+stage('检查编译工具');
 const engines = arg('--engine', 'all') === 'all' ? Object.keys(sources) : [arg('--engine')];
 const backends =
   arg('--backend', 'all') === 'all'
@@ -23,9 +30,24 @@ if (backends.includes('metal') && process.platform !== 'darwin')
 const execute = (bin, args, cwd = root) =>
   new Promise((resolve, reject) => {
     const c = spawn(bin, args, { cwd, stdio: 'inherit' });
-    c.on('error', reject);
+    c.on('error', (error) =>
+      reject(
+        new Error(
+          error.code === 'ENOENT'
+            ? `找不到构建工具 ${bin}。Mac 源码构建需要 Git、CMake 和 Xcode 命令行工具；先准备这些工具再重试。已下载的模型无需重装。`
+            : error.message,
+        ),
+      ),
+    );
     c.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${bin} exited ${code}`))));
   });
+// Fail before fetching source when the local toolchain is incomplete.
+await execute(process.env.CUTCUT_CMAKE || 'cmake', ['--version']);
+await execute('git', ['--version']);
+if (process.platform === 'darwin') await execute('xcrun', ['--find', 'clang']);
+console.log(
+  `构建目标：${process.platform}-${process.arch}；运行 CUTCUT 的 Electron 需要使用相同架构。`,
+);
 async function walk(dir) {
   const out = [];
   for (const ent of await fs.readdir(dir, { withFileTypes: true })) {
@@ -37,7 +59,8 @@ async function walk(dir) {
 }
 for (const engine of engines) {
   const spec = sources[engine],
-    src = path.join(root, '.native-build', 'sources', engine);
+    src = path.join(workRoot, 'sources', engine);
+  stage('下载固定版本源码：' + engine);
   await fs.mkdir(src, { recursive: true });
   if (!(await fs.stat(path.join(src, '.git')).catch(() => null)))
     await execute('git', ['init'], src);
@@ -47,19 +70,8 @@ for (const engine of engines) {
   await execute('git', ['submodule', 'sync', '--recursive'], src);
   await execute('git', ['submodule', 'update', '--init', '--recursive', '--depth', '1'], src);
   for (const backend of backends) {
-    const build = path.join(
-        root,
-        '.native-build',
-        `${engine}-${process.platform}-${process.arch}-${backend}`,
-      ),
-      out = path.join(
-        root,
-        'resources',
-        'runtimes',
-        `${process.platform}-${process.arch}`,
-        engine,
-        backend,
-      ),
+    const build = path.join(workRoot, `${engine}-${process.platform}-${process.arch}-${backend}`),
+      out = path.join(outputRoot, `${process.platform}-${process.arch}`, engine, backend),
       bin = path.join(out, 'bin');
     const metal = backend === 'metal' ? 'ON' : 'OFF';
     const flags = [
@@ -87,7 +99,9 @@ for (const engine of engines) {
         '-DENGINE_BUILD_TESTS=OFF',
         '-DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=OFF',
       );
+    stage('配置编译：' + engine + ' / ' + backend);
     await execute(process.env.CUTCUT_CMAKE || 'cmake', ['-S', src, '-B', build, ...flags]);
+    stage('正在编译：' + engine + ' / ' + backend);
     await execute(process.env.CUTCUT_CMAKE || 'cmake', [
       '--build',
       build,
@@ -98,6 +112,7 @@ for (const engine of engines) {
       '--parallel',
       arg('--jobs', '2'),
     ]);
+    stage('整理运行程序和许可证：' + engine);
     const artifacts = (await walk(build)).filter(
       (f) => path.basename(f) === spec.binary || /\.(so(?:\.\d+)*|dylib|metallib)$/.test(f),
     );
