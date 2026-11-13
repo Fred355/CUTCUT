@@ -22,6 +22,22 @@
 
 安装与本地推理使用同一队列，并与导出互斥。安装是应用级任务，关闭工程不会中止它；退出应用前需要完成或在设置中取消。不会关闭用户的 Ollama 服务。
 
+## audio.cpp 编译失败：std::to_chars / macOS 13.3
+
+2026-11-13 Debug 更新：用户在 M1 Pro 上安装音乐 Runtime 时，CMake 配置成功且 Metal 后端已找到，但编译 `src/framework/debug/trace.cpp:75` 报错：
+
+```text
+error: 'to_chars' is unavailable: introduced in macOS 13.3
+```
+
+原因是 audio.cpp 使用了浮点 `std::to_chars`，Apple libc++ 将它标记为 macOS 13.3 起可用；CUTCUT 旧构建脚本却指定 `CMAKE_OSX_DEPLOYMENT_TARGET=13.0`。即使当前系统较新，编译器也会按指定的最低部署版本拒绝使用该接口。日志中的 SentencePiece CMake 弃用警告不是这次失败的原因，末尾的 `cmake exited 2` 只是编译失败的结果。
+
+解决方案：仅将 audio.cpp 的 macOS CPU/Metal 构建目标提高到 13.3，sd.cpp 和 Whisper 仍为 13.0。音乐 Runtime 的最低系统要求随之为 macOS 13.3；13.0–13.2 不能使用这个修复后的二进制，需要升级系统或另做上游源码兼容处理。
+
+更新步骤：退出旧应用，获取最新源码，执行 `npm run build` 和 `npm start`；随后在“软件设置 → 音乐生成”再次点击“编译并安装运行程序”。`npm run build` 会重新生成应用实际调用的 `resources/native/build-native.mjs`，只拉取源码而不构建应用仍可能运行旧安装器。引擎安装仍在应用内操作，无需手动执行 CMake。
+
+每次重试都会执行 CMake 配置，新的显式 `-DCMAKE_OSX_DEPLOYMENT_TARGET=13.3` 会覆盖原构建缓存中的 13.0，并由构建系统重编译受影响文件；无需删除模型或整个缓存目录，也无需重装已成功的 sd.cpp。用户已报告 sd.cpp 安装成功，这不代表音频修复或模型推理已通过实机验收。Mac 实际编译及音乐生成结果仍需重试确认。
+
 ## 运行时与模型清单
 
 运行时源码提交固定在 resources/native/sources.json；构建目录独立保存 CPU 和 Metal 二进制。

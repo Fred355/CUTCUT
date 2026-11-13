@@ -30,6 +30,8 @@
 
 ## 安装、启动与更新
 
+**2026-11-13 Debug 修复：** audio.cpp 编译出现 `std::to_chars is unavailable: introduced in macOS 13.3` 时，原因是旧脚本将最低部署版本固定为 13.0。现已仅将 audio.cpp 的 CPU/Metal 构建目标调整为 13.3，sd.cpp 与 Whisper 保持原配置。更新源码并执行 `npm run build` 后，在软件设置 → 音乐生成中重新点击“编译并安装运行程序”；模型无需重新下载。音乐 Runtime 要求 macOS 13.3 或更新版本。详细原因、缓存处理和验证边界见 [Debug 更新说明](docs/LOCAL-TOOLS.md)。
+
 需要 Node.js 22.12+ 与 npm；Linux 验证使用 Node.js 24.22.1。在项目源码目录执行：
 
 ```bash

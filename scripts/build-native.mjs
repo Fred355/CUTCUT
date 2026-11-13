@@ -85,7 +85,8 @@ for (const engine of engines) {
     if (process.platform === 'darwin')
       flags.push(
         '-DCMAKE_OSX_ARCHITECTURES=' + process.arch.replace('x64', 'x86_64'),
-        '-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0',
+        // audio.cpp trace.cpp uses floating-point std::to_chars (macOS 13.3+).
+        '-DCMAKE_OSX_DEPLOYMENT_TARGET=' + (engine === 'audio' ? '13.3' : '13.0'),
       );
     if (engine === 'whisper') flags.push('-DWHISPER_BUILD_TESTS=OFF', '-DWHISPER_BUILD_SERVER=OFF');
     if (engine === 'sd') flags.push('-DSD_METAL=' + metal, '-DSD_WEBP=OFF', '-DSD_WEBM=OFF');

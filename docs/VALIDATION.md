@@ -89,3 +89,11 @@ M1 Pro 仍需验收：在同一台电脑启动真实外部模型服务，加载�
 - 安装器打包检查覆盖缺失脚本及固定源码清单；有效模型清单和安装器齐备时不要求预编译 Runtime。当前 Hugging Face 访问仍受限，不能生成真实锁定清单，不能据测试替身制作完整发布包。
 
 实编译测试需要显示服务、Git、CMake 和 C++ 工具；Linux CI 可设置 `DISPLAY`、必要时使用隔离测试用的 `CUTCUT_TEST_NO_SANDBOX=1`。Mac 不使用该沙箱豁免。编译工具路径可通过 `CUTCUT_CMAKE` 指定；普通 Mac 用户安装 CMake.app 后由应用自动发现。
+
+## 2026-11-13 audio.cpp / macOS 13.3 编译目标修复
+
+- 用户 M1 Pro 日志：Metal 后端配置成功，但 `trace.cpp:75` 的浮点 `std::to_chars` 被标记为 macOS 13.3 起可用，旧脚本指定 13.0，造成编译错误。SentencePiece 的 CMake 弃用警告不是根因。
+- 仅修改 audio.cpp 的 macOS 部署目标为 13.3（同时覆盖 CPU/Metal）；sd.cpp 与 Whisper 保持 13.0，Linux 构建参数不变。每次安装重试重新运行 CMake，显式参数覆盖旧缓存值，保留权重。
+- `node --check scripts/build-native.mjs`、`npm run build`（含类型检查）通过；确认生成的 `resources/native/build-native.mjs` 含按引擎选择的 13.3/13.0 参数，避免只改开发脚本而应用仍调用旧安装器。
+- `npx tsx --test tests/runtime-builder.test.ts`：3 项通过，覆盖三引擎受控安装、失败/取消保留原版本、提交失败和编译子进程取消。这些测试没有调用 Apple 编译器，不能代替 Mac 实编译验收。
+- sd.cpp 安装成功来自用户反馈；audio.cpp 此修复后的 M1 Pro 编译和真实音乐推理尚待用户重试。最低 macOS 要求 13.3，不宣称兼容旧系统或已经完成 Metal 验收。
